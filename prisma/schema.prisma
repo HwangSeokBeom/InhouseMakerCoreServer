@@ -1,0 +1,451 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Position {
+  TOP
+  JUNGLE
+  MID
+  ADC
+  SUPPORT
+  FILL
+}
+
+enum VerificationStatus {
+  CLAIMED
+  GROUP_VERIFIED
+  ADMIN_VERIFIED
+}
+
+enum MatchStatus {
+  DRAFT
+  RECRUITING
+  LOCKED
+  BALANCED
+  IN_PROGRESS
+  RESULT_PENDING
+  CONFIRMED
+  DISPUTED
+  CLOSED
+}
+
+enum TeamSide {
+  A
+  B
+}
+
+enum ResultStatus {
+  PARTIAL
+  CONFIRMED
+  DISPUTED
+}
+
+enum InputMode {
+  QUICK
+  DETAILED
+}
+
+enum RecruitingPostType {
+  MEMBER_RECRUIT
+  OPPONENT_RECRUIT
+}
+
+enum GroupRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+enum ParticipationStatus {
+  INVITED
+  ACCEPTED
+  DECLINED
+  LOCKED_IN
+}
+
+enum QueueType {
+  SOLO_RANK
+  FLEX_RANK
+  ALL
+}
+
+enum SnapshotType {
+  RANKED
+  RECENT_MATCHES
+  MATCH_DETAIL
+  AGGREGATED
+}
+
+enum LaneResult {
+  WIN
+  EVEN
+  LOSE
+  UNKNOWN
+}
+
+enum ConfirmationAction {
+  CONFIRM
+  SUGGEST_CHANGE
+  DISPUTE
+}
+
+enum NotificationType {
+  RESULT_CONFIRMATION_REQUEST
+  GROUP_INVITE
+  RECRUITING_CLOSED
+  RESULT_CONFIRMED
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  READ
+  FAILED
+}
+
+enum GroupVisibility {
+  PRIVATE
+  PUBLIC
+}
+
+enum JoinPolicy {
+  INVITE_ONLY
+  APPROVAL_REQUIRED
+  OPEN
+}
+
+enum RecruitingPostStatus {
+  OPEN
+  CLOSED
+  CANCELLED
+}
+
+enum BalanceMode {
+  BALANCED
+  POSITION_FIRST
+  SKILL_FIRST
+}
+
+model User {
+  id               String                @id @default(cuid())
+  email            String                @unique
+  appleSub         String?               @unique @map("apple_sub")
+  passwordHash     String?               @map("password_hash")
+  refreshTokenHash String?               @map("refresh_token_hash")
+  nickname         String
+  primaryPosition  Position?             @map("primary_position")
+  secondaryPosition Position?            @map("secondary_position")
+  isFillAvailable  Boolean               @default(false) @map("is_fill_available")
+  styleTags        Json?                 @map("style_tags")
+  mannerScore      Float                 @default(100) @map("manner_score")
+  noshowCount      Int                   @default(0) @map("noshow_count")
+  createdAt        DateTime              @default(now()) @map("created_at")
+  updatedAt        DateTime              @updatedAt @map("updated_at")
+
+  riotAccounts             RiotAccount[]
+  powerProfile             PlayerPowerProfile?
+  ownedGroups              InhouseGroup[]
+  groupMemberships         GroupMember[]
+  createdMatches           InhouseMatch[]          @relation("match_created_by")
+  submittedMatchResults    InhouseMatchResult[]    @relation("match_result_submitted_by")
+  mvpMatchResults          InhouseMatchResult[]    @relation("match_result_mvp_user")
+  matchPlayers             InhouseMatchPlayer[]
+  playerStats              InhousePlayerStat[]
+  resultConfirmations      MatchResultConfirmation[]
+  notifications            Notification[]
+  auditLogs                AuditLog[]
+  createdRecruitingPosts   RecruitingPost[]        @relation("recruiting_post_created_by")
+
+  @@map("users")
+}
+
+model RiotAccount {
+  id                 String                 @id @default(cuid())
+  userId             String                 @map("user_id")
+  riotGameName       String                 @map("riot_game_name")
+  tagLine            String                 @map("tag_line")
+  region             String
+  puuid              String                 @unique
+  summonerId         String?                @map("summoner_id")
+  isPrimary          Boolean                @default(false) @map("is_primary")
+  verificationStatus VerificationStatus     @default(CLAIMED) @map("verification_status")
+  lastSyncedAt       DateTime?              @map("last_synced_at")
+  lastSyncError      String?                @map("last_sync_error")
+  createdAt          DateTime               @default(now()) @map("created_at")
+  updatedAt          DateTime               @updatedAt @map("updated_at")
+
+  user          User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  snapshots     RiotAccountSnapshot[]
+  powerProfiles PlayerPowerProfile[]
+  matchPlayers  InhouseMatchPlayer[]
+
+  @@index([userId, isPrimary])
+  @@index([userId, lastSyncedAt])
+  @@map("riot_accounts")
+}
+
+model RiotAccountSnapshot {
+  id            String        @id @default(cuid())
+  riotAccountId String        @map("riot_account_id")
+  snapshotType  SnapshotType  @map("snapshot_type")
+  queueType     QueueType?    @map("queue_type")
+  sampleSize    Int?          @map("sample_size")
+  tier          String?
+  rank          String?
+  lp            Int?
+  metricsJson   Json?         @map("metrics_json")
+  collectedAt   DateTime      @default(now()) @map("collected_at")
+
+  riotAccount RiotAccount @relation(fields: [riotAccountId], references: [id], onDelete: Cascade)
+
+  @@index([riotAccountId, collectedAt])
+  @@index([snapshotType, collectedAt])
+  @@map("riot_account_snapshots")
+}
+
+model PlayerPowerProfile {
+  id                   String      @id @default(cuid())
+  userId               String      @unique @map("user_id")
+  sourceAccountId      String?     @map("source_account_id")
+  basePower            Float       @default(0) @map("base_power")
+  formScore            Float       @default(0) @map("form_score")
+  styleScoresJson      Json?       @map("style_scores_json")
+  inhouseMmr           Float       @default(1500) @map("inhouse_mmr")
+  inhouseConfidence    Float       @default(0) @map("inhouse_confidence")
+  lanePowerJson        Json?       @map("lane_power_json")
+  overallPower         Float       @default(0) @map("overall_power")
+  confirmedMatchCount  Int         @default(0) @map("confirmed_match_count")
+  version              String
+  calculatedAt         DateTime    @default(now()) @map("calculated_at")
+  createdAt            DateTime    @default(now()) @map("created_at")
+  updatedAt            DateTime    @updatedAt @map("updated_at")
+
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sourceAccount RiotAccount? @relation(fields: [sourceAccountId], references: [id], onDelete: SetNull)
+
+  @@index([calculatedAt])
+  @@map("player_power_profiles")
+}
+
+model InhouseGroup {
+  id          String          @id @default(cuid())
+  ownerUserId String          @map("owner_user_id")
+  name        String
+  description String?
+  visibility  GroupVisibility @default(PRIVATE)
+  joinPolicy  JoinPolicy      @default(INVITE_ONLY) @map("join_policy")
+  tags        Json?
+  createdAt   DateTime        @default(now()) @map("created_at")
+  updatedAt   DateTime        @updatedAt @map("updated_at")
+
+  owner          User             @relation(fields: [ownerUserId], references: [id], onDelete: Restrict)
+  members        GroupMember[]
+  matches        InhouseMatch[]
+  recruitingPosts RecruitingPost[]
+
+  @@index([ownerUserId])
+  @@map("inhouse_groups")
+}
+
+model GroupMember {
+  id        String    @id @default(cuid())
+  groupId   String    @map("group_id")
+  userId    String    @map("user_id")
+  role      GroupRole @default(MEMBER)
+  joinedAt  DateTime  @default(now()) @map("joined_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  group InhouseGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user  User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([groupId, userId])
+  @@index([userId, role])
+  @@map("group_members")
+}
+
+model InhouseMatch {
+  id                 String         @id @default(cuid())
+  groupId            String         @map("group_id")
+  createdBy          String         @map("created_by")
+  title              String?
+  status             MatchStatus    @default(DRAFT)
+  scheduledAt        DateTime?      @map("scheduled_at")
+  balanceMode        BalanceMode?   @map("balance_mode")
+  selectedCandidateNo Int?          @map("selected_candidate_no")
+  notes              String?
+  candidatesJson     Json?          @map("candidates_json")
+  createdAt          DateTime       @default(now()) @map("created_at")
+  updatedAt          DateTime       @updatedAt @map("updated_at")
+
+  group       InhouseGroup          @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  creator     User                  @relation("match_created_by", fields: [createdBy], references: [id], onDelete: Restrict)
+  players     InhouseMatchPlayer[]
+  result      InhouseMatchResult?
+  playerStats InhousePlayerStat[]
+  confirmations MatchResultConfirmation[]
+
+  @@index([groupId, status])
+  @@index([groupId, scheduledAt])
+  @@map("inhouse_matches")
+}
+
+model InhouseMatchPlayer {
+  id                        String              @id @default(cuid())
+  matchId                   String              @map("match_id")
+  userId                    String              @map("user_id")
+  riotAccountId             String?             @map("riot_account_id")
+  teamSide                  TeamSide?           @map("team_side")
+  assignedRole              Position?           @map("assigned_role")
+  positionPrefSnapshot      Json?               @map("position_pref_snapshot")
+  sameTeamPreferencesJson   Json?               @map("same_team_preferences_json")
+  avoidTeamPreferencesJson  Json?               @map("avoid_team_preferences_json")
+  participationStatus       ParticipationStatus @default(INVITED) @map("participation_status")
+  isCaptain                 Boolean             @default(false) @map("is_captain")
+  createdAt                 DateTime            @default(now()) @map("created_at")
+  updatedAt                 DateTime            @updatedAt @map("updated_at")
+
+  match       InhouseMatch   @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  user        User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  riotAccount RiotAccount?   @relation(fields: [riotAccountId], references: [id], onDelete: SetNull)
+
+  @@unique([matchId, userId])
+  @@index([matchId, participationStatus])
+  @@index([userId, participationStatus])
+  @@map("inhouse_match_players")
+}
+
+model InhouseMatchResult {
+  id                String       @id @default(cuid())
+  matchId           String       @unique @map("match_id")
+  winningTeam       TeamSide?    @map("winning_team")
+  mvpUserId         String?      @map("mvp_user_id")
+  balanceRating     Int?         @map("balance_rating")
+  resultStatus      ResultStatus @default(PARTIAL) @map("result_status")
+  inputMode         InputMode    @map("input_mode")
+  submittedBy       String       @map("submitted_by")
+  confirmedAt       DateTime?    @map("confirmed_at")
+  notes             String?
+  payloadJson       Json?        @map("payload_json")
+  idempotencyKey    String?      @map("idempotency_key")
+  version           Int          @default(1)
+  createdAt         DateTime     @default(now()) @map("created_at")
+  updatedAt         DateTime     @updatedAt @map("updated_at")
+
+  match          InhouseMatch              @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  submittedByUser User                     @relation("match_result_submitted_by", fields: [submittedBy], references: [id], onDelete: Restrict)
+  mvpUser         User?                    @relation("match_result_mvp_user", fields: [mvpUserId], references: [id], onDelete: SetNull)
+  confirmations   MatchResultConfirmation[]
+
+  @@index([resultStatus, createdAt])
+  @@map("inhouse_match_results")
+}
+
+model InhousePlayerStat {
+  id                 String       @id @default(cuid())
+  matchId            String       @map("match_id")
+  userId             String       @map("user_id")
+  teamSide           TeamSide     @map("team_side")
+  role               Position
+  kills              Int          @default(0)
+  deaths             Int          @default(0)
+  assists            Int          @default(0)
+  laneResult         LaneResult   @default(UNKNOWN) @map("lane_result")
+  contributionRating Int?         @map("contribution_rating")
+  statStatus         ResultStatus @default(PARTIAL) @map("stat_status")
+  detailsJson        Json?        @map("details_json")
+  createdAt          DateTime     @default(now()) @map("created_at")
+  updatedAt          DateTime     @updatedAt @map("updated_at")
+
+  match InhouseMatch @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  user  User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([matchId, userId])
+  @@index([userId, createdAt])
+  @@map("inhouse_player_stats")
+}
+
+model RecruitingPost {
+  id                    String               @id @default(cuid())
+  groupId               String               @map("group_id")
+  createdBy             String               @map("created_by")
+  postType              RecruitingPostType   @map("post_type")
+  title                 String
+  body                  String?
+  tags                  Json?
+  scheduledAt           DateTime?            @map("scheduled_at")
+  requiredPositionsJson Json?                @map("required_positions_json")
+  status                RecruitingPostStatus @default(OPEN)
+  createdAt             DateTime             @default(now()) @map("created_at")
+  updatedAt             DateTime             @updatedAt @map("updated_at")
+
+  group         InhouseGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  createdByUser User         @relation("recruiting_post_created_by", fields: [createdBy], references: [id], onDelete: Restrict)
+
+  @@index([groupId, status, scheduledAt])
+  @@map("recruiting_posts")
+}
+
+model MatchResultConfirmation {
+  id                 String              @id @default(cuid())
+  matchResultId      String              @map("match_result_id")
+  matchId            String              @map("match_id")
+  userId             String              @map("user_id")
+  resultVersion      Int                 @default(1) @map("result_version")
+  action             ConfirmationAction
+  diffJson           Json?               @map("diff_json")
+  proposedWinningTeam TeamSide?          @map("proposed_winning_team")
+  comment            String?
+  createdAt          DateTime            @default(now()) @map("created_at")
+
+  matchResult InhouseMatchResult @relation(fields: [matchResultId], references: [id], onDelete: Cascade)
+  user        User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  match       InhouseMatch       @relation(fields: [matchId], references: [id], onDelete: Cascade)
+
+  @@index([matchResultId, userId, createdAt])
+  @@index([matchId, createdAt])
+  @@map("match_result_confirmations")
+}
+
+model Notification {
+  id              String             @id @default(cuid())
+  userId          String             @map("user_id")
+  type            NotificationType
+  title           String
+  body            String
+  payloadJson     Json?              @map("payload_json")
+  status          NotificationStatus @default(PENDING)
+  relatedEntityType String?          @map("related_entity_type")
+  relatedEntityId String?            @map("related_entity_id")
+  sentAt          DateTime?          @map("sent_at")
+  readAt          DateTime?          @map("read_at")
+  createdAt       DateTime           @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status, createdAt])
+  @@map("notifications")
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String?  @map("user_id")
+  action     String
+  entityType String   @map("entity_type")
+  entityId   String   @map("entity_id")
+  beforeJson Json?    @map("before_json")
+  afterJson  Json?    @map("after_json")
+  metaJson   Json?    @map("meta_json")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([entityType, entityId, createdAt])
+  @@index([userId, createdAt])
+  @@map("audit_logs")
+}
