@@ -15,6 +15,31 @@ export interface AlgorithmPlayer {
   lockedRole?: Position | null;
 }
 
+export interface PairHistorySummary {
+  userIds: [string, string];
+  sameTeamMatches: number;
+  weightedSameTeamScore: number;
+  recentMatchIds: string[];
+}
+
+export interface MatchHistoryContext {
+  recentWindowSize: number;
+  matchesAnalyzed: number;
+  sameTeamPairHistory: Record<string, PairHistorySummary>;
+}
+
+interface RepeatTeamPenaltyBreakdown {
+  totalPenalty: number;
+  repeatedDuoCount: number;
+  penalizedPairs: Array<{
+    userIds: [string, string];
+    sameTeamMatches: number;
+    weightedSameTeamScore: number;
+    penalty: number;
+    recentMatchIds: string[];
+  }>;
+}
+
 export interface MatchmakingCandidate {
   candidateId: string;
   candidateNo: number;
@@ -27,6 +52,20 @@ export interface MatchmakingCandidate {
     repeatTeamPenalty: number;
     preferenceViolationPenalty: number;
     volatilityClusterPenalty: number;
+  };
+  explanationDetails: {
+    repeatTeam: {
+      matchesAnalyzed: number;
+      recentWindowSize: number;
+      repeatedDuoCount: number;
+      penalizedPairs: Array<{
+        userIds: [string, string];
+        sameTeamMatches: number;
+        weightedSameTeamScore: number;
+        penalty: number;
+        recentMatchIds: string[];
+      }>;
+    };
   };
   teamAPower: number;
   teamBPower: number;
@@ -61,17 +100,17 @@ export class MatchmakingAlgorithmService {
   generateCandidates(
     players: AlgorithmPlayer[],
     excludedCandidateIds: string[] = [],
+    historyContext?: MatchHistoryContext,
   ): MatchmakingCandidate[] {
     if (players.length !== 10) {
       return [];
     }
 
     const splitCandidates: Array<{
-      teamAPlayers: AlgorithmPlayer[];
-      teamBPlayers: AlgorithmPlayer[];
       teamAAssignments: MatchmakingCandidate['teamA'];
       teamBAssignments: MatchmakingCandidate['teamB'];
       metrics: MatchmakingCandidate['metrics'];
+      explanationDetails: MatchmakingCandidate['explanationDetails'];
       teamAPower: number;
       teamBPower: number;
       offRoleCount: number;
@@ -96,22 +135,22 @@ export class MatchmakingAlgorithmService {
         continue;
       }
 
-      const metrics = this.calculateMetrics(
+      const evaluation = this.calculateMetrics(
         teamAPlayers,
         teamBPlayers,
         teamAAssignment.assignments,
         teamBAssignment.assignments,
+        historyContext,
       );
+
       splitCandidates.push({
-        teamAPlayers,
-        teamBPlayers,
         teamAAssignments: teamAAssignment.assignments,
         teamBAssignments: teamBAssignment.assignments,
-        metrics,
+        metrics: evaluation.metrics,
+        explanationDetails: evaluation.explanationDetails,
         teamAPower: this.sumRolePower(teamAAssignment.assignments),
         teamBPower: this.sumRolePower(teamBAssignment.assignments),
-        offRoleCount:
-          teamAAssignment.offRoleCount + teamBAssignment.offRoleCount,
+        offRoleCount: teamAAssignment.offRoleCount + teamBAssignment.offRoleCount,
       });
     }
 
@@ -133,10 +172,15 @@ export class MatchmakingAlgorithmService {
               type: mode,
               score,
               metrics: candidate.metrics,
+              explanationDetails: candidate.explanationDetails,
               teamAPower: Number(candidate.teamAPower.toFixed(2)),
               teamBPower: Number(candidate.teamBPower.toFixed(2)),
               offRoleCount: candidate.offRoleCount,
-              explanationTags: this.buildExplanationTags(candidate.metrics, candidate.offRoleCount),
+              explanationTags: this.buildExplanationTags(
+                candidate.metrics,
+                candidate.offRoleCount,
+                candidate.explanationDetails.repeatTeam.repeatedDuoCount,
+              ),
               teamA: candidate.teamAAssignments,
               teamB: candidate.teamBAssignments,
             };
@@ -279,14 +323,14 @@ export class MatchmakingAlgorithmService {
       return null;
     }
 
-      return {
-        assignments: bestAssignments.sort(
-          (left, right) =>
-            ROLE_ORDER.indexOf(left.assignedRole as (typeof ROLE_ORDER)[number]) -
-            ROLE_ORDER.indexOf(right.assignedRole as (typeof ROLE_ORDER)[number]),
-        ),
-        cost: bestCost,
-        offRoleCount: bestOffRoleCount,
+    return {
+      assignments: bestAssignments.sort(
+        (left, right) =>
+          ROLE_ORDER.indexOf(left.assignedRole as (typeof ROLE_ORDER)[number]) -
+          ROLE_ORDER.indexOf(right.assignedRole as (typeof ROLE_ORDER)[number]),
+      ),
+      cost: bestCost,
+      offRoleCount: bestOffRoleCount,
     };
   }
 
@@ -315,13 +359,18 @@ export class MatchmakingAlgorithmService {
     teamBPlayers: AlgorithmPlayer[],
     teamA: MatchmakingCandidate['teamA'],
     teamB: MatchmakingCandidate['teamB'],
-  ): MatchmakingCandidate['metrics'] {
+    historyContext?: MatchHistoryContext,
+  ): {
+    metrics: MatchmakingCandidate['metrics'];
+    explanationDetails: MatchmakingCandidate['explanationDetails'];
+  } {
     const teamPowerGap = Math.abs(this.sumRolePower(teamA) - this.sumRolePower(teamB)) / 10;
-    const laneMatchupGap = ROLE_ORDER.reduce((sum, role) => {
-      const teamAPlayer = teamA.find((player) => player.assignedRole === role);
-      const teamBPlayer = teamB.find((player) => player.assignedRole === role);
-      return sum + Math.abs(Number(teamAPlayer?.rolePower ?? 0) - Number(teamBPlayer?.rolePower ?? 0));
-    }, 0) / 20;
+    const laneMatchupGap =
+      ROLE_ORDER.reduce((sum, role) => {
+        const teamAPlayer = teamA.find((player) => player.assignedRole === role);
+        const teamBPlayer = teamB.find((player) => player.assignedRole === role);
+        return sum + Math.abs(Number(teamAPlayer?.rolePower ?? 0) - Number(teamBPlayer?.rolePower ?? 0));
+      }, 0) / 20;
 
     const allPlayers = new Map(
       [...teamAPlayers, ...teamBPlayers].map((player) => [player.userId, player]),
@@ -335,18 +384,111 @@ export class MatchmakingAlgorithmService {
     const preferenceViolationPenalty =
       this.preferencePenalty(teamAPlayers, teamA) + this.preferencePenalty(teamBPlayers, teamB);
 
+    const repeatTeamBreakdown = this.calculateRepeatTeamPenalty(
+      [...teamA.map((player) => player.userId), ...teamB.map((player) => player.userId)],
+      historyContext,
+      [teamA.map((player) => player.userId), teamB.map((player) => player.userId)],
+    );
+
     const teamAStdDev = this.standardDeviation(teamA.map((player) => player.rolePower));
     const teamBStdDev = this.standardDeviation(teamB.map((player) => player.rolePower));
     const volatilityClusterPenalty = Math.abs(teamAStdDev - teamBStdDev) / 3;
 
     return {
-      teamPowerGap: Number(teamPowerGap.toFixed(4)),
-      laneMatchupGap: Number(laneMatchupGap.toFixed(4)),
-      offRolePenalty: Number(offRolePenalty.toFixed(4)),
-      repeatTeamPenalty: 0,
-      preferenceViolationPenalty: Number(preferenceViolationPenalty.toFixed(4)),
-      volatilityClusterPenalty: Number(volatilityClusterPenalty.toFixed(4)),
+      metrics: {
+        teamPowerGap: Number(teamPowerGap.toFixed(4)),
+        laneMatchupGap: Number(laneMatchupGap.toFixed(4)),
+        offRolePenalty: Number(offRolePenalty.toFixed(4)),
+        repeatTeamPenalty: Number(repeatTeamBreakdown.totalPenalty.toFixed(4)),
+        preferenceViolationPenalty: Number(preferenceViolationPenalty.toFixed(4)),
+        volatilityClusterPenalty: Number(volatilityClusterPenalty.toFixed(4)),
+      },
+      explanationDetails: {
+        repeatTeam: {
+          matchesAnalyzed: historyContext?.matchesAnalyzed ?? 0,
+          recentWindowSize: historyContext?.recentWindowSize ?? 0,
+          repeatedDuoCount: repeatTeamBreakdown.repeatedDuoCount,
+          penalizedPairs: repeatTeamBreakdown.penalizedPairs,
+        },
+      },
     };
+  }
+
+  private calculateRepeatTeamPenalty(
+    userIds: string[],
+    historyContext: MatchHistoryContext | undefined,
+    teams: [string[], string[]],
+  ): RepeatTeamPenaltyBreakdown {
+    if (!historyContext || historyContext.matchesAnalyzed === 0) {
+      return {
+        totalPenalty: 0,
+        repeatedDuoCount: 0,
+        penalizedPairs: [],
+      };
+    }
+
+    const currentUserIdSet = new Set(userIds);
+    const penalizedPairs: RepeatTeamPenaltyBreakdown['penalizedPairs'] = [];
+
+    // Recent same-team pairings are penalized more heavily so the algorithm avoids
+    // repeatedly gluing the same duo together across a short window of inhouse matches.
+    for (const team of teams) {
+      const pairKeys = this.buildPairs(team);
+      for (const [left, right] of pairKeys) {
+        const pairKey = this.buildPairKey(left, right);
+        const summary = historyContext.sameTeamPairHistory[pairKey];
+
+        if (!summary || !currentUserIdSet.has(left) || !currentUserIdSet.has(right)) {
+          continue;
+        }
+
+        const duoRepeatBonus = Math.max(0, summary.sameTeamMatches - 1) * 0.9;
+        const penalty = Number((summary.weightedSameTeamScore * 1.4 + duoRepeatBonus).toFixed(4));
+
+        if (penalty <= 0) {
+          continue;
+        }
+
+        penalizedPairs.push({
+          userIds: summary.userIds,
+          sameTeamMatches: summary.sameTeamMatches,
+          weightedSameTeamScore: Number(summary.weightedSameTeamScore.toFixed(4)),
+          penalty,
+          recentMatchIds: summary.recentMatchIds,
+        });
+      }
+    }
+
+    penalizedPairs.sort((left, right) => right.penalty - left.penalty);
+
+    return {
+      totalPenalty: penalizedPairs.reduce((sum, pair) => sum + pair.penalty, 0),
+      repeatedDuoCount: penalizedPairs.filter((pair) => pair.sameTeamMatches >= 2).length,
+      penalizedPairs: penalizedPairs.slice(0, 6),
+    };
+  }
+
+  private buildPairs(userIds: string[]): Array<[string, string]> {
+    const pairs: Array<[string, string]> = [];
+
+    for (let leftIndex = 0; leftIndex < userIds.length; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1; rightIndex < userIds.length; rightIndex += 1) {
+        pairs.push(
+          this.sortPair(userIds[leftIndex], userIds[rightIndex]),
+        );
+      }
+    }
+
+    return pairs;
+  }
+
+  private sortPair(left: string, right: string): [string, string] {
+    return left < right ? [left, right] : [right, left];
+  }
+
+  private buildPairKey(left: string, right: string): string {
+    const [first, second] = this.sortPair(left, right);
+    return `${first}:${second}`;
   }
 
   private preferencePenalty(
@@ -381,6 +523,7 @@ export class MatchmakingAlgorithmService {
   private buildExplanationTags(
     metrics: MatchmakingCandidate['metrics'],
     offRoleCount: number,
+    repeatedDuoCount: number,
   ): string[] {
     const tags = [];
 
@@ -395,6 +538,12 @@ export class MatchmakingAlgorithmService {
     }
     if (metrics.preferenceViolationPenalty === 0) {
       tags.push('preference-safe');
+    }
+    if (metrics.repeatTeamPenalty <= 1.2) {
+      tags.push('low-repeat-pairing');
+    }
+    if (repeatedDuoCount > 0) {
+      tags.push('repeat-duo-detected');
     }
 
     return tags;

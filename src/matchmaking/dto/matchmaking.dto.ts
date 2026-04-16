@@ -2,11 +2,21 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { BalanceMode, Position, TeamSide } from '@prisma/client';
 import {
   IsArray,
+  ArrayMaxSize,
+  ArrayMinSize,
+  IsBoolean,
   IsEnum,
   IsNumber,
+  IsObject,
   IsOptional,
   IsString,
+  Max,
+  MaxLength,
+  Min,
+  MinLength,
+  ValidateNested,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 
 export class AutoBalanceDto {
   @ApiPropertyOptional({ enum: BalanceMode, default: BalanceMode.BALANCED })
@@ -72,6 +82,42 @@ class CandidateMetricsDto {
   volatilityClusterPenalty!: number;
 }
 
+class RepeatTeamPairDto {
+  @ApiProperty({ type: [String] })
+  userIds!: [string, string];
+
+  @ApiProperty()
+  sameTeamMatches!: number;
+
+  @ApiProperty()
+  weightedSameTeamScore!: number;
+
+  @ApiProperty()
+  penalty!: number;
+
+  @ApiProperty({ type: [String] })
+  recentMatchIds!: string[];
+}
+
+class RepeatTeamExplanationDto {
+  @ApiProperty()
+  matchesAnalyzed!: number;
+
+  @ApiProperty()
+  recentWindowSize!: number;
+
+  @ApiProperty()
+  repeatedDuoCount!: number;
+
+  @ApiProperty({ type: [RepeatTeamPairDto] })
+  penalizedPairs!: RepeatTeamPairDto[];
+}
+
+class CandidateExplanationDetailsDto {
+  @ApiProperty({ type: RepeatTeamExplanationDto })
+  repeatTeam!: RepeatTeamExplanationDto;
+}
+
 export class MatchmakingCandidateDto {
   @ApiProperty()
   candidateId!: string;
@@ -87,6 +133,9 @@ export class MatchmakingCandidateDto {
 
   @ApiProperty({ type: CandidateMetricsDto })
   metrics!: CandidateMetricsDto;
+
+  @ApiProperty({ type: CandidateExplanationDetailsDto })
+  explanationDetails!: CandidateExplanationDetailsDto;
 
   @ApiProperty()
   teamAPower!: number;
@@ -112,3 +161,81 @@ export class MatchmakingCandidatesResponseDto {
   candidates!: MatchmakingCandidateDto[];
 }
 
+export class BalancePreviewPlayerDto {
+  @ApiProperty()
+  @IsString()
+  @MinLength(1)
+  @MaxLength(80)
+  userId!: string;
+
+  @ApiProperty()
+  @IsString()
+  @MinLength(1)
+  @MaxLength(80)
+  nickname!: string;
+
+  @ApiPropertyOptional({ enum: Position, nullable: true })
+  @IsOptional()
+  @IsEnum(Position)
+  primaryPosition?: Position | null;
+
+  @ApiPropertyOptional({ enum: Position, nullable: true })
+  @IsOptional()
+  @IsEnum(Position)
+  secondaryPosition?: Position | null;
+
+  @ApiPropertyOptional({ default: true })
+  @IsOptional()
+  @IsBoolean()
+  isFillAvailable?: boolean;
+
+  @ApiProperty({ minimum: 0, maximum: 100 })
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(100)
+  overallPower!: number;
+
+  @ApiPropertyOptional({ type: Object })
+  @IsOptional()
+  @IsObject()
+  lanePower?: Record<string, number>;
+
+  @ApiPropertyOptional({ type: [String] })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  sameTeamPreferenceUserIds?: string[];
+
+  @ApiPropertyOptional({ type: [String] })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  avoidTeamPreferenceUserIds?: string[];
+
+  @ApiPropertyOptional({ enum: TeamSide, nullable: true })
+  @IsOptional()
+  @IsEnum(TeamSide)
+  lockedTeamSide?: TeamSide | null;
+
+  @ApiPropertyOptional({ enum: Position, nullable: true })
+  @IsOptional()
+  @IsEnum(Position)
+  lockedRole?: Position | null;
+}
+
+export class BalancePreviewDto {
+  @ApiProperty({ type: [BalancePreviewPlayerDto] })
+  @IsArray()
+  @ArrayMinSize(10)
+  @ArrayMaxSize(10)
+  @ValidateNested({ each: true })
+  @Type(() => BalancePreviewPlayerDto)
+  players!: BalancePreviewPlayerDto[];
+
+  @ApiPropertyOptional({ type: [String] })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  excludeCandidateIds?: string[];
+}

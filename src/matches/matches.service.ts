@@ -7,21 +7,32 @@ import {
 import {
   BalanceMode,
   GroupRole,
+  LaneResult,
   MatchStatus,
   ParticipationStatus,
   Position,
   Prisma,
+  ResultStatus,
+  TeamSide,
 } from '@prisma/client';
 
+import { AuditLogService } from '../common/audit-log.service';
 import { GroupsService } from '../groups/groups.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { AddMatchPlayersDto, CreateMatchDto, MatchResponseDto } from './dto/matches.dto';
+import {
+  AddMatchPlayersDto,
+  CreateMatchDto,
+  MatchResponseDto,
+  MatchSummaryResponseDto,
+  UpdateMatchPlayerDto,
+} from './dto/matches.dto';
 
 @Injectable()
 export class MatchesService {
   constructor(
     private readonly prismaService: PrismaService,
     private readonly groupsService: GroupsService,
+    private readonly auditLogService: AuditLogService,
   ) {}
 
   async createMatch(
@@ -71,10 +82,9 @@ export class MatchesService {
 
     if (
       match.status !== MatchStatus.DRAFT &&
-      match.status !== MatchStatus.RECRUITING &&
-      match.status !== MatchStatus.LOCKED
+      match.status !== MatchStatus.RECRUITING
     ) {
-      throw new BadRequestException('Players can only be modified before balancing.');
+      throw new BadRequestException('Players can only be added before the match is locked.');
     }
 
     const currentUserIds = new Set(match.players.map((player) => player.userId));
@@ -102,6 +112,95 @@ export class MatchesService {
         data: createInputs,
       });
     }
+
+    return this.getMatch(requesterUserId, matchId);
+  }
+
+  async updatePlayer(
+    requesterUserId: string,
+    matchId: string,
+    playerId: string,
+    dto: UpdateMatchPlayerDto,
+  ): Promise<MatchResponseDto> {
+    const match = await this.getMatchWithPlayers(matchId);
+    await this.assertAdminOrGroupAdmin(match, requesterUserId);
+
+    if (
+      match.status === MatchStatus.IN_PROGRESS ||
+      match.status === MatchStatus.CONFIRMED ||
+      match.status === MatchStatus.CLOSED
+    ) {
+      throw new BadRequestException('This match can no longer be edited.');
+    }
+
+    if (
+      match.status === MatchStatus.BALANCED ||
+      match.status === MatchStatus.RESULT_PENDING ||
+      match.status === MatchStatus.DISPUTED
+    ) {
+      throw new BadRequestException('Reopen the match before editing players at this stage.');
+    }
+
+    const player = match.players.find((item) => item.id === playerId);
+    if (!player) {
+      throw new NotFoundException('Match player not found.');
+    }
+
+    const shouldReopen = match.status === MatchStatus.LOCKED;
+
+    await this.prismaService.$transaction(async (tx) => {
+      await tx.inhouseMatchPlayer.update({
+        where: { id: playerId },
+        data: {
+          riotAccountId: dto.riotAccountId,
+          participationStatus: dto.participationStatus,
+          sameTeamPreferencesJson: dto.sameTeamPreferenceUserIds,
+          avoidTeamPreferencesJson: dto.avoidTeamPreferenceUserIds,
+          isCaptain: dto.isCaptain,
+        },
+      });
+
+      if (shouldReopen) {
+        await tx.inhouseMatchPlayer.updateMany({
+          where: {
+            matchId,
+            participationStatus: ParticipationStatus.LOCKED_IN,
+          },
+          data: {
+            participationStatus: ParticipationStatus.ACCEPTED,
+          },
+        });
+
+        await tx.inhouseMatch.update({
+          where: { id: matchId },
+          data: {
+            status: MatchStatus.RECRUITING,
+            balanceMode: null,
+            selectedCandidateNo: null,
+            candidatesJson: Prisma.JsonNull,
+          },
+        });
+      }
+    });
+
+    await this.auditLogService.create({
+      userId: requesterUserId,
+      action: 'MATCH_PLAYER_UPDATED',
+      entityType: 'inhouse_match_players',
+      entityId: playerId,
+      before: {
+        riotAccountId: player.riotAccountId,
+        participationStatus: player.participationStatus,
+        sameTeamPreferencesJson: player.sameTeamPreferencesJson,
+        avoidTeamPreferencesJson: player.avoidTeamPreferencesJson,
+        isCaptain: player.isCaptain,
+      },
+      after: dto,
+      meta: {
+        matchId,
+        reopenedToRecruiting: shouldReopen,
+      },
+    });
 
     return this.getMatch(requesterUserId, matchId);
   }
@@ -134,6 +233,14 @@ export class MatchesService {
         data: { status: MatchStatus.LOCKED },
       }),
     ]);
+
+    await this.auditLogService.create({
+      userId: requesterUserId,
+      action: 'MATCH_LOCKED',
+      entityType: 'inhouse_matches',
+      entityId: matchId,
+      after: { status: MatchStatus.LOCKED },
+    });
 
     return this.getMatch(requesterUserId, matchId);
   }
@@ -191,7 +298,140 @@ export class MatchesService {
       });
     });
 
+    await this.auditLogService.create({
+      userId: requesterUserId,
+      action: 'MATCH_BALANCED',
+      entityType: 'inhouse_matches',
+      entityId: matchId,
+      after: {
+        status: MatchStatus.BALANCED,
+        candidateNo,
+      },
+    });
+
     return this.getMatch(requesterUserId, matchId);
+  }
+
+  async reopenMatch(
+    requesterUserId: string,
+    matchId: string,
+  ): Promise<MatchResponseDto> {
+    const match = await this.getMatchWithPlayers(matchId);
+    await this.assertAdminOrGroupAdmin(match, requesterUserId);
+
+    if (
+      match.status === MatchStatus.IN_PROGRESS ||
+      match.status === MatchStatus.CONFIRMED ||
+      match.status === MatchStatus.CLOSED ||
+      match.result?.resultStatus === ResultStatus.CONFIRMED
+    ) {
+      throw new BadRequestException('Confirmed or in-progress matches cannot be reopened.');
+    }
+
+    if (
+      match.status !== MatchStatus.LOCKED &&
+      match.status !== MatchStatus.BALANCED &&
+      match.status !== MatchStatus.RESULT_PENDING &&
+      match.status !== MatchStatus.DISPUTED
+    ) {
+      throw new BadRequestException('Only locked, balanced, or unconfirmed result matches can be reopened.');
+    }
+
+    await this.prismaService.$transaction(async (tx) => {
+      if (match.result) {
+        await tx.inhousePlayerStat.deleteMany({
+          where: { matchId },
+        });
+
+        await tx.inhouseMatchResult.delete({
+          where: { id: match.result.id },
+        });
+      }
+
+      await tx.inhouseMatchPlayer.updateMany({
+        where: { matchId },
+        data: {
+          teamSide: null,
+          assignedRole: null,
+          participationStatus: ParticipationStatus.ACCEPTED,
+        },
+      });
+
+      await tx.inhouseMatch.update({
+        where: { id: matchId },
+        data: {
+          status: MatchStatus.RECRUITING,
+          balanceMode: null,
+          selectedCandidateNo: null,
+          candidatesJson: Prisma.JsonNull,
+        },
+      });
+    });
+
+    await this.auditLogService.create({
+      userId: requesterUserId,
+      action: 'MATCH_REOPENED',
+      entityType: 'inhouse_matches',
+      entityId: matchId,
+      meta: {
+        previousStatus: match.status,
+        previousResultStatus: match.result?.resultStatus ?? null,
+      },
+    });
+
+    return this.getMatch(requesterUserId, matchId);
+  }
+
+  async getMatchSummary(
+    requesterUserId: string,
+    matchId: string,
+  ): Promise<MatchSummaryResponseDto> {
+    const match = await this.getMatchWithPlayers(matchId);
+    await this.groupsService.assertGroupMember(match.groupId, requesterUserId);
+
+    const stats = await this.prismaService.inhousePlayerStat.findMany({
+      where: { matchId },
+    });
+    const powerProfiles = await this.prismaService.playerPowerProfile.findMany({
+      where: {
+        userId: {
+          in: match.players.map((player) => player.userId),
+        },
+      },
+      select: {
+        userId: true,
+        overallPower: true,
+      },
+    });
+
+    const powerMap = new Map(powerProfiles.map((profile) => [profile.userId, profile.overallPower]));
+    const statMap = new Map(stats.map((stat) => [stat.userId, stat]));
+    const toSummaryPlayer = (player: (typeof match.players)[number]) => {
+      const stat = statMap.get(player.userId);
+      return {
+        userId: player.userId,
+        nickname: player.user.nickname,
+        assignedRole: player.assignedRole,
+        currentPower: powerMap.get(player.userId) ?? 0,
+        kda: stat ? `${stat.kills}/${stat.deaths}/${stat.assists}` : null,
+        laneResult: stat?.laneResult ?? null,
+      };
+    };
+    const teamA = match.players.filter((player) => player.teamSide === TeamSide.A).map(toSummaryPlayer);
+    const teamB = match.players.filter((player) => player.teamSide === TeamSide.B).map(toSummaryPlayer);
+
+    return {
+      matchId: match.id,
+      status: match.status,
+      winningTeam: match.result?.winningTeam ?? null,
+      resultStatus: match.result?.resultStatus ?? null,
+      mvpUserId: match.result?.mvpUserId ?? null,
+      balanceRating: match.result?.balanceRating ?? null,
+      teamAPower: Number(teamA.reduce((sum, player) => sum + player.currentPower, 0).toFixed(2)),
+      teamBPower: Number(teamB.reduce((sum, player) => sum + player.currentPower, 0).toFixed(2)),
+      teamA,
+      teamB,
+    };
   }
 
   async assertMatchHostOrCaptain(matchId: string, userId: string): Promise<void> {
@@ -267,6 +507,36 @@ export class MatchesService {
     ) {
       throw new ForbiddenException('Only the match host or group admin can perform this action.');
     }
+  }
+
+  private async assertAdminOrGroupAdmin(
+    match: Awaited<ReturnType<MatchesService['getMatchWithPlayers']>>,
+    userId: string,
+  ): Promise<void> {
+    const [membership, user] = await Promise.all([
+      this.prismaService.groupMember.findUnique({
+        where: {
+          groupId_userId: {
+            groupId: match.groupId,
+            userId,
+          },
+        },
+      }),
+      this.prismaService.user.findUnique({
+        where: { id: userId },
+        select: { isAdmin: true },
+      }),
+    ]);
+
+    if (
+      user?.isAdmin ||
+      (membership &&
+        (membership.role === GroupRole.OWNER || membership.role === GroupRole.ADMIN))
+    ) {
+      return;
+    }
+
+    throw new ForbiddenException('Only admins or group admins can perform this action.');
   }
 
   private toMatchResponse(match: {

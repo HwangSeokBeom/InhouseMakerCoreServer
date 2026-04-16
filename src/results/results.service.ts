@@ -6,7 +6,9 @@ import {
 } from '@nestjs/common';
 import {
   ConfirmationAction,
+  GroupRole,
   InputMode,
+  LaneResult,
   MatchStatus,
   NotificationType,
   ParticipationStatus,
@@ -21,9 +23,14 @@ import { NotificationService } from '../notifications/notification.service';
 import { QueueService } from '../queue/queue.service';
 import { PrismaService } from '../prisma/prisma.service';
 import {
+  AdminResolveResultDto,
+  AdminResolveResultResponseDto,
   ConfirmResultDto,
   MatchResultResponseDto,
   QuickResultDto,
+  QuickResultPreviewDto,
+  QuickResultPreviewResponseDto,
+  ResultDisputeResponseDto,
   ResultSubmissionResponseDto,
 } from './dto/results.dto';
 import { ResultConfirmationPolicyService } from './result-confirmation-policy.service';
@@ -38,6 +45,46 @@ export class ResultsService {
     private readonly auditLogService: AuditLogService,
     private readonly resultConfirmationPolicyService: ResultConfirmationPolicyService,
   ) {}
+
+  previewQuickResult(dto: QuickResultPreviewDto): QuickResultPreviewResponseDto {
+    if (dto.players.length !== 10) {
+      throw new BadRequestException('Result preview requires exactly 10 players.');
+    }
+
+    const uniqueUserIds = new Set(dto.players.map((player) => player.userId));
+    if (uniqueUserIds.size !== dto.players.length) {
+      throw new BadRequestException('Result preview players must be unique.');
+    }
+
+    if (!dto.players.some((player) => player.userId === dto.mvpUserId)) {
+      throw new BadRequestException('MVP user must be one of the preview players.');
+    }
+
+    const teamSummaries = [TeamSide.A, TeamSide.B].map((teamSide) => {
+      const players = dto.players.filter((player) => player.teamSide === teamSide);
+
+      if (players.length !== 5) {
+        throw new BadRequestException('Result preview requires exactly 5 players on each team.');
+      }
+
+      return {
+        teamSide,
+        playerCount: players.length,
+        kills: players.reduce((sum, player) => sum + player.kills, 0),
+        deaths: players.reduce((sum, player) => sum + player.deaths, 0),
+        assists: players.reduce((sum, player) => sum + player.assists, 0),
+      };
+    });
+
+    return {
+      validated: true,
+      playerCount: dto.players.length,
+      mvpUserId: dto.mvpUserId,
+      winningTeam: dto.winningTeam,
+      balanceRating: dto.balanceRating,
+      teams: teamSummaries,
+    };
+  }
 
   async submitQuickResult(
     requesterUserId: string,
@@ -171,6 +218,12 @@ export class ResultsService {
         })),
     );
 
+    await Promise.all(
+      match.players.map((player) =>
+        this.queueService.enqueuePowerRecalculation(player.userId, `result-partial:${matchId}`),
+      ),
+    );
+
     return this.buildSubmissionResponse(result.id, ResultStatus.PARTIAL, match.players.length);
   }
 
@@ -262,25 +315,202 @@ export class ResultsService {
       orderBy: { createdAt: 'asc' },
     });
 
+    return this.buildMatchResultResponse(result, stats);
+  }
+
+  async getDisputeDetail(
+    requesterUserId: string,
+    matchId: string,
+    resultId: string,
+  ): Promise<ResultDisputeResponseDto> {
+    const match = await this.matchesService.getMatchWithPlayers(matchId);
+    await this.assertResultResolutionAuthority(requesterUserId, match.groupId);
+
+    const result = await this.prismaService.inhouseMatchResult.findFirst({
+      where: {
+        id: resultId,
+        matchId,
+      },
+      include: {
+        confirmations: {
+          orderBy: { createdAt: 'desc' },
+        },
+      },
+    });
+
+    if (!result) {
+      throw new NotFoundException('Match result not found.');
+    }
+
+    if (result.resultStatus !== ResultStatus.DISPUTED) {
+      throw new BadRequestException('Only disputed results can be reviewed in dispute detail.');
+    }
+
+    const stats = await this.prismaService.inhousePlayerStat.findMany({
+      where: { matchId },
+      orderBy: { createdAt: 'asc' },
+    });
+    const currentVersionConfirmations = result.confirmations.filter(
+      (confirmation) => confirmation.resultVersion === result.version,
+    );
+    const participants = match.players.filter(
+      (player) =>
+        player.participationStatus === ParticipationStatus.ACCEPTED ||
+        player.participationStatus === ParticipationStatus.LOCKED_IN,
+    );
+
     return {
-      id: result.id,
+      matchId,
+      submittedBy: result.submittedBy,
+      ...this.buildMatchResultResponse(result, stats),
+      disputeSummary: this.buildDisputeSummary(
+        result.winningTeam,
+        participants.length,
+        currentVersionConfirmations,
+      ),
+    };
+  }
+
+  async adminResolveDispute(
+    requesterUserId: string,
+    matchId: string,
+    resultId: string,
+    dto: AdminResolveResultDto,
+  ): Promise<AdminResolveResultResponseDto> {
+    const match = await this.matchesService.getMatchWithPlayers(matchId);
+    await this.assertResultResolutionAuthority(requesterUserId, match.groupId);
+
+    if (dto.mvpUserId && !match.players.some((player) => player.userId === dto.mvpUserId)) {
+      throw new BadRequestException('MVP user must be one of the current match players.');
+    }
+
+    const result = await this.prismaService.inhouseMatchResult.findFirst({
+      where: {
+        id: resultId,
+        matchId,
+      },
+    });
+
+    if (!result) {
+      throw new NotFoundException('Match result not found.');
+    }
+
+    if (result.resultStatus !== ResultStatus.DISPUTED) {
+      throw new BadRequestException('Only disputed results can be admin resolved.');
+    }
+
+    const before = {
       winningTeam: result.winningTeam,
+      mvpUserId: result.mvpUserId,
+      balanceRating: result.balanceRating,
       resultStatus: result.resultStatus,
-      inputMode: result.inputMode,
-      players: stats.map((stat) => ({
-        userId: stat.userId,
-        kills: stat.kills,
-        deaths: stat.deaths,
-        assists: stat.assists,
-        laneResult: stat.laneResult,
-      })),
-      confirmations: result.confirmations.map((confirmation) => ({
-        userId: confirmation.userId,
-        action: confirmation.action,
-        diff: (confirmation.diffJson as Record<string, unknown> | null) ?? null,
-        comment: confirmation.comment,
-        createdAt: confirmation.createdAt.toISOString(),
-      })),
+      version: result.version,
+      adminResolutionNote: result.adminResolutionNote,
+    };
+    const factualChange =
+      result.winningTeam !== dto.winningTeam ||
+      (dto.mvpUserId !== undefined && dto.mvpUserId !== result.mvpUserId) ||
+      (dto.balanceRating !== undefined && dto.balanceRating !== result.balanceRating);
+    const resolvedAt = new Date();
+    const nextPayload = {
+      ...((result.payloadJson as Record<string, unknown> | null) ?? {}),
+      winningTeam: dto.winningTeam,
+      mvpUserId: dto.mvpUserId ?? result.mvpUserId,
+      balanceRating: dto.balanceRating ?? result.balanceRating,
+    };
+
+    const updated = await this.prismaService.$transaction(async (tx) => {
+      const resolvedResult = await tx.inhouseMatchResult.update({
+        where: { id: resultId },
+        data: {
+          winningTeam: dto.winningTeam,
+          mvpUserId: dto.mvpUserId ?? result.mvpUserId,
+          balanceRating: dto.balanceRating ?? result.balanceRating,
+          payloadJson: toPrismaJson(nextPayload),
+          resultStatus: ResultStatus.CONFIRMED,
+          confirmedAt: resolvedAt,
+          adminResolvedById: requesterUserId,
+          adminResolutionNote: dto.note,
+          adminResolvedAt: resolvedAt,
+          ...(factualChange ? { version: { increment: 1 } } : {}),
+        },
+      });
+
+      await tx.inhousePlayerStat.updateMany({
+        where: { matchId },
+        data: {
+          statStatus: ResultStatus.CONFIRMED,
+        },
+      });
+
+      await tx.inhouseMatch.update({
+        where: { id: matchId },
+        data: {
+          status: MatchStatus.CONFIRMED,
+        },
+      });
+
+      return resolvedResult;
+    });
+
+    await this.auditLogService.create({
+      userId: requesterUserId,
+      action: 'RESULT_ADMIN_RESOLVED',
+      entityType: 'inhouse_match_results',
+      entityId: resultId,
+      before,
+      after: {
+        winningTeam: updated.winningTeam,
+        mvpUserId: updated.mvpUserId,
+        balanceRating: updated.balanceRating,
+        resultStatus: updated.resultStatus,
+        version: updated.version,
+        adminResolutionNote: updated.adminResolutionNote,
+        adminResolvedAt: updated.adminResolvedAt?.toISOString() ?? null,
+      },
+      meta: {
+        matchId,
+        factualChange,
+      },
+    });
+
+    const participantUserIds = match.players
+      .filter(
+        (player) =>
+          player.participationStatus === ParticipationStatus.ACCEPTED ||
+          player.participationStatus === ParticipationStatus.LOCKED_IN,
+      )
+      .map((player) => player.userId);
+    await Promise.all(
+      participantUserIds.map((userId) =>
+        this.queueService.enqueuePowerRecalculation(userId, `admin-resolved:${matchId}`),
+      ),
+    );
+
+    await this.notificationService.createMany(
+      participantUserIds
+        .filter((userId) => userId !== requesterUserId)
+        .map((userId) => ({
+          userId,
+          type: NotificationType.RESULT_ADMIN_RESOLVED,
+          title: '내전 결과가 운영자에 의해 확정되었습니다',
+          body: dto.note,
+          payload: {
+            matchId,
+            resultId,
+            winningTeam: updated.winningTeam,
+            version: updated.version,
+          },
+          relatedEntityType: 'match_result',
+          relatedEntityId: resultId,
+        })),
+    );
+
+    return {
+      resultId,
+      status: updated.resultStatus,
+      version: updated.version,
+      adminResolvedAt: updated.adminResolvedAt?.toISOString() ?? null,
     };
   }
 
@@ -357,6 +587,17 @@ export class ResultsService {
       await this.queueService.enqueueFinalizeResultConfirmation(matchResultId);
     }
 
+    if (status !== previousStatus) {
+      await this.auditLogService.create({
+        action: 'RESULT_STATUS_TRANSITIONED',
+        entityType: 'inhouse_match_results',
+        entityId: matchResultId,
+        before: { resultStatus: previousStatus },
+        after: { resultStatus: status },
+        meta: { matchId: result.matchId, resultVersion: result.version },
+      });
+    }
+
     if (status === ResultStatus.CONFIRMED && previousStatus !== ResultStatus.CONFIRMED) {
       for (const participant of participants) {
         await this.queueService.enqueuePowerRecalculation(
@@ -378,7 +619,86 @@ export class ResultsService {
       );
     }
 
+    if (status === ResultStatus.DISPUTED && previousStatus !== ResultStatus.DISPUTED) {
+      for (const participant of participants) {
+        await this.queueService.enqueuePowerRecalculation(
+          participant.userId,
+          `result-disputed:${result.matchId}`,
+        );
+      }
+
+      const adminRecipientUserIds = await this.getResultAdminRecipientUserIds(result.match.groupId);
+
+      await this.notificationService.createMany(
+        adminRecipientUserIds.map((userId) => ({
+          userId,
+          type: NotificationType.RESULT_DISPUTED,
+          title: '분쟁 중인 결과 확인이 필요합니다',
+          body: '내전 결과가 분쟁 상태로 전환되어 운영자 확인이 필요합니다.',
+          payload: { matchId: result.matchId, resultId: matchResultId },
+          relatedEntityType: 'match_result',
+          relatedEntityId: matchResultId,
+        })),
+      );
+    }
+
     return status;
+  }
+
+  private buildMatchResultResponse(
+    result: {
+      id: string;
+      winningTeam: TeamSide | null;
+      resultStatus: ResultStatus;
+      inputMode: InputMode;
+      version: number;
+      confirmedAt: Date | null;
+      adminResolvedById: string | null;
+      adminResolutionNote: string | null;
+      adminResolvedAt: Date | null;
+      confirmations: Array<{
+        userId: string;
+        action: ConfirmationAction;
+        diffJson: unknown;
+        comment: string | null;
+        proposedWinningTeam: TeamSide | null;
+        createdAt: Date;
+      }>;
+    },
+    stats: Array<{
+      userId: string;
+      kills: number;
+      deaths: number;
+      assists: number;
+      laneResult: LaneResult;
+    }>,
+  ): MatchResultResponseDto {
+    return {
+      id: result.id,
+      winningTeam: result.winningTeam,
+      resultStatus: result.resultStatus,
+      inputMode: result.inputMode,
+      version: result.version,
+      confirmedAt: result.confirmedAt?.toISOString() ?? null,
+      adminResolvedById: result.adminResolvedById,
+      adminResolutionNote: result.adminResolutionNote,
+      adminResolvedAt: result.adminResolvedAt?.toISOString() ?? null,
+      players: stats.map((stat) => ({
+        userId: stat.userId,
+        kills: stat.kills,
+        deaths: stat.deaths,
+        assists: stat.assists,
+        laneResult: stat.laneResult,
+      })),
+      confirmations: result.confirmations.map((confirmation) => ({
+        userId: confirmation.userId,
+        action: confirmation.action,
+        diff: (confirmation.diffJson as Record<string, unknown> | null) ?? null,
+        comment: confirmation.comment,
+        proposedWinningTeam: confirmation.proposedWinningTeam,
+        createdAt: confirmation.createdAt.toISOString(),
+      })),
+    };
   }
 
   private buildSubmissionResponse(
@@ -398,5 +718,96 @@ export class ResultsService {
   ): TeamSide | null {
     const winningTeam = diff?.winningTeam;
     return winningTeam === TeamSide.A || winningTeam === TeamSide.B ? winningTeam : null;
+  }
+
+  private buildDisputeSummary(
+    winningTeam: TeamSide | null,
+    participantCount: number,
+    confirmations: Array<{
+      userId: string;
+      action: ConfirmationAction;
+      proposedWinningTeam: TeamSide | null;
+      createdAt: Date;
+    }>,
+  ): ResultDisputeResponseDto['disputeSummary'] {
+    const latestByUser = new Map<string, (typeof confirmations)[number]>();
+
+    for (const confirmation of [...confirmations].sort(
+      (left, right) => right.createdAt.getTime() - left.createdAt.getTime(),
+    )) {
+      if (!latestByUser.has(confirmation.userId)) {
+        latestByUser.set(confirmation.userId, confirmation);
+      }
+    }
+
+    const latest = [...latestByUser.values()];
+
+    return {
+      participantCount,
+      confirmCount: latest.filter((confirmation) => confirmation.action === ConfirmationAction.CONFIRM).length,
+      conflictingCount: latest.filter((confirmation) => confirmation.action !== ConfirmationAction.CONFIRM).length,
+      winningTeamConflict: latest.some(
+        (confirmation) =>
+          confirmation.proposedWinningTeam !== null &&
+          winningTeam !== null &&
+          confirmation.proposedWinningTeam !== winningTeam,
+      ),
+    };
+  }
+
+  private async assertResultResolutionAuthority(
+    userId: string,
+    groupId: string,
+  ): Promise<void> {
+    const [user, membership] = await Promise.all([
+      this.prismaService.user.findUnique({
+        where: { id: userId },
+        select: { isAdmin: true },
+      }),
+      this.prismaService.groupMember.findUnique({
+        where: {
+          groupId_userId: {
+            groupId,
+            userId,
+          },
+        },
+      }),
+    ]);
+
+    if (user?.isAdmin) {
+      return;
+    }
+
+    if (membership && (membership.role === GroupRole.OWNER || membership.role === GroupRole.ADMIN)) {
+      return;
+    }
+
+    throw new ForbiddenException('Only admins or group admins can resolve disputed results.');
+  }
+
+  private async getResultAdminRecipientUserIds(groupId: string): Promise<string[]> {
+    const [admins, groupAdmins] = await Promise.all([
+      this.prismaService.user.findMany({
+        where: {
+          isAdmin: true,
+        },
+        select: {
+          id: true,
+        },
+      }),
+      this.prismaService.groupMember.findMany({
+        where: {
+          groupId,
+          role: {
+            in: [GroupRole.OWNER, GroupRole.ADMIN],
+          },
+        },
+        select: {
+          userId: true,
+        },
+      }),
+    ]);
+
+    return [...new Set([...admins.map((admin) => admin.id), ...groupAdmins.map((member) => member.userId)])];
   }
 }

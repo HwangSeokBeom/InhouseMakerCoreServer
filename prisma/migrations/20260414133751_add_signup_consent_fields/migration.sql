@@ -1,0 +1,2 @@
+-- RenameIndex
+ALTER INDEX "inhouse_match_results_admin_resolved_by_id_admin_resolved_at_id" RENAME TO "inhouse_match_results_admin_resolved_by_id_admin_resolved_a_idx";

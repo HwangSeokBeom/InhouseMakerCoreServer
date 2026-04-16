@@ -1,10 +1,11 @@
-import { Logger, ValidationPipe } from '@nestjs/common';
+import { BadRequestException, Logger, ValidationError, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
 
 import { AppModule } from './app.module';
+import { AuthErrorCode } from './auth/auth-error-code';
 import { PrismaService } from './prisma/prisma.service';
 
 async function bootstrap(): Promise<void> {
@@ -19,6 +20,20 @@ async function bootstrap(): Promise<void> {
       whitelist: true,
       transform: true,
       forbidNonWhitelisted: true,
+      exceptionFactory: (errors: ValidationError[]) =>
+        new BadRequestException({
+          success: false,
+          code: AuthErrorCode.INVALID_PAYLOAD,
+          message: 'Payload is invalid.',
+          details: {
+            validationErrors: errors.flatMap((error) =>
+              Object.values(error.constraints ?? {}).map((constraint) => ({
+                field: error.property,
+                message: constraint,
+              })),
+            ),
+          },
+        }),
     }),
   );
 

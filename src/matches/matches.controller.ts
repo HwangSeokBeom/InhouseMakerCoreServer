@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiCreatedResponse,
@@ -10,7 +10,13 @@ import {
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-request.interface';
-import { AddMatchPlayersDto, CreateMatchDto, MatchResponseDto } from './dto/matches.dto';
+import {
+  AddMatchPlayersDto,
+  CreateMatchDto,
+  MatchResponseDto,
+  MatchSummaryResponseDto,
+  UpdateMatchPlayerDto,
+} from './dto/matches.dto';
 import { MatchesService } from './matches.service';
 
 @ApiTags('matches')
@@ -52,6 +58,18 @@ export class MatchesController {
     return this.matchesService.addPlayers(user.userId, matchId, dto);
   }
 
+  @Patch('matches/:matchId/players/:playerId')
+  @ApiOperation({ summary: 'Update a locked or recruiting match player as admin/group admin.' })
+  @ApiOkResponse({ type: MatchResponseDto })
+  updatePlayer(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('matchId') matchId: string,
+    @Param('playerId') playerId: string,
+    @Body() dto: UpdateMatchPlayerDto,
+  ): Promise<MatchResponseDto> {
+    return this.matchesService.updatePlayer(user.userId, matchId, playerId, dto);
+  }
+
   @Post('matches/:matchId/lock')
   @ApiOperation({ summary: 'Lock a match roster before auto-balance.' })
   @ApiOkResponse({ type: MatchResponseDto })
@@ -61,5 +79,24 @@ export class MatchesController {
   ): Promise<MatchResponseDto> {
     return this.matchesService.lockMatch(user.userId, matchId);
   }
-}
 
+  @Post('matches/:matchId/reopen')
+  @ApiOperation({ summary: 'Reopen a locked or unconfirmed match for roster updates.' })
+  @ApiOkResponse({ type: MatchResponseDto })
+  reopenMatch(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('matchId') matchId: string,
+  ): Promise<MatchResponseDto> {
+    return this.matchesService.reopenMatch(user.userId, matchId);
+  }
+
+  @Get('matches/:matchId/summary')
+  @ApiOperation({ summary: 'Get a compact match summary for app surfaces.' })
+  @ApiOkResponse({ type: MatchSummaryResponseDto })
+  getMatchSummary(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('matchId') matchId: string,
+  ): Promise<MatchSummaryResponseDto> {
+    return this.matchesService.getMatchSummary(user.userId, matchId);
+  }
+}

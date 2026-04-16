@@ -1,4 +1,5 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Position } from '@prisma/client';
 
 class StyleScoresDto {
   @ApiProperty()
@@ -40,9 +41,20 @@ export class PowerProfileResponseDto {
   inhouseConfidence!: number;
 
   @ApiProperty()
+  inhouseWeight!: number;
+
+  @ApiPropertyOptional({ enum: Position, nullable: true, required: false })
+  primaryPosition!: Position | null;
+
+  @ApiPropertyOptional({ enum: Position, nullable: true, required: false })
+  secondaryPosition!: Position | null;
+
+  @ApiProperty({ type: Object })
+  explanation!: Record<string, unknown>;
+
+  @ApiProperty()
   version!: string;
 
   @ApiProperty()
   calculatedAt!: string;
 }
-

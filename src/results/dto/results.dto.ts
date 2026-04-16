@@ -7,13 +7,17 @@ import {
   TeamSide,
 } from '@prisma/client';
 import {
+  ArrayMaxSize,
+  ArrayMinSize,
   IsArray,
   IsEnum,
   IsInt,
   IsObject,
   IsOptional,
   IsString,
+  MaxLength,
   Max,
+  MinLength,
   Min,
   ValidateNested,
 } from 'class-validator';
@@ -73,6 +77,73 @@ export class QuickResultDto {
   players!: QuickResultPlayerDto[];
 }
 
+export class QuickResultPreviewPlayerDto extends QuickResultPlayerDto {
+  @ApiProperty({ enum: TeamSide })
+  @IsEnum(TeamSide)
+  teamSide!: TeamSide;
+}
+
+export class QuickResultPreviewDto {
+  @ApiProperty({ enum: TeamSide })
+  @IsEnum(TeamSide)
+  winningTeam!: TeamSide;
+
+  @ApiProperty()
+  @IsString()
+  mvpUserId!: string;
+
+  @ApiProperty()
+  @IsInt()
+  @Min(1)
+  @Max(5)
+  balanceRating!: number;
+
+  @ApiProperty({ type: [QuickResultPreviewPlayerDto] })
+  @IsArray()
+  @ArrayMinSize(10)
+  @ArrayMaxSize(10)
+  @ValidateNested({ each: true })
+  @Type(() => QuickResultPreviewPlayerDto)
+  players!: QuickResultPreviewPlayerDto[];
+}
+
+class QuickResultPreviewTeamSummaryDto {
+  @ApiProperty({ enum: TeamSide })
+  teamSide!: TeamSide;
+
+  @ApiProperty()
+  playerCount!: number;
+
+  @ApiProperty()
+  kills!: number;
+
+  @ApiProperty()
+  deaths!: number;
+
+  @ApiProperty()
+  assists!: number;
+}
+
+export class QuickResultPreviewResponseDto {
+  @ApiProperty()
+  validated!: true;
+
+  @ApiProperty()
+  playerCount!: number;
+
+  @ApiProperty()
+  mvpUserId!: string;
+
+  @ApiProperty({ enum: TeamSide })
+  winningTeam!: TeamSide;
+
+  @ApiProperty()
+  balanceRating!: number;
+
+  @ApiProperty({ type: [QuickResultPreviewTeamSummaryDto] })
+  teams!: QuickResultPreviewTeamSummaryDto[];
+}
+
 export class ConfirmResultDto {
   @ApiProperty({ enum: ConfirmationAction })
   @IsEnum(ConfirmationAction)
@@ -87,6 +158,30 @@ export class ConfirmResultDto {
   @IsOptional()
   @IsString()
   comment?: string;
+}
+
+export class AdminResolveResultDto {
+  @ApiProperty({ enum: TeamSide })
+  @IsEnum(TeamSide)
+  winningTeam!: TeamSide;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  mvpUserId?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(5)
+  balanceRating?: number;
+
+  @ApiProperty()
+  @IsString()
+  @MinLength(3)
+  @MaxLength(1000)
+  note!: string;
 }
 
 export class ResultSubmissionResponseDto {
@@ -112,6 +207,9 @@ class ResultConfirmationDto {
 
   @ApiPropertyOptional()
   comment!: string | null;
+
+  @ApiProperty({ enum: TeamSide, nullable: true, required: false })
+  proposedWinningTeam!: TeamSide | null;
 
   @ApiProperty()
   createdAt!: string;
@@ -147,6 +245,21 @@ export class MatchResultResponseDto {
   @ApiProperty({ enum: InputMode })
   inputMode!: InputMode;
 
+  @ApiProperty()
+  version!: number;
+
+  @ApiPropertyOptional()
+  confirmedAt!: string | null;
+
+  @ApiPropertyOptional()
+  adminResolvedById!: string | null;
+
+  @ApiPropertyOptional()
+  adminResolutionNote!: string | null;
+
+  @ApiPropertyOptional()
+  adminResolvedAt!: string | null;
+
   @ApiProperty({ type: [ResultStatDto] })
   players!: ResultStatDto[];
 
@@ -154,3 +267,41 @@ export class MatchResultResponseDto {
   confirmations!: ResultConfirmationDto[];
 }
 
+class ResultDisputeSummaryDto {
+  @ApiProperty()
+  participantCount!: number;
+
+  @ApiProperty()
+  confirmCount!: number;
+
+  @ApiProperty()
+  conflictingCount!: number;
+
+  @ApiProperty()
+  winningTeamConflict!: boolean;
+}
+
+export class ResultDisputeResponseDto extends MatchResultResponseDto {
+  @ApiProperty()
+  matchId!: string;
+
+  @ApiProperty()
+  submittedBy!: string;
+
+  @ApiProperty({ type: ResultDisputeSummaryDto })
+  disputeSummary!: ResultDisputeSummaryDto;
+}
+
+export class AdminResolveResultResponseDto {
+  @ApiProperty()
+  resultId!: string;
+
+  @ApiProperty({ enum: ResultStatus })
+  status!: ResultStatus;
+
+  @ApiProperty()
+  version!: number;
+
+  @ApiPropertyOptional()
+  adminResolvedAt!: string | null;
+}

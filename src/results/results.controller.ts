@@ -20,9 +20,12 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-request.interface';
 import {
+  AdminResolveResultDto,
+  AdminResolveResultResponseDto,
   ConfirmResultDto,
   MatchResultResponseDto,
   QuickResultDto,
+  ResultDisputeResponseDto,
   ResultSubmissionResponseDto,
 } from './dto/results.dto';
 import { ResultsService } from './results.service';
@@ -77,5 +80,27 @@ export class ResultsController {
   ): Promise<MatchResultResponseDto> {
     return this.resultsService.getMatchResult(user.userId, matchId);
   }
-}
 
+  @Get(':resultId/dispute')
+  @ApiOperation({ summary: 'Get dispute detail for admin or group admin resolution.' })
+  @ApiOkResponse({ type: ResultDisputeResponseDto })
+  getDispute(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('matchId') matchId: string,
+    @Param('resultId') resultId: string,
+  ): Promise<ResultDisputeResponseDto> {
+    return this.resultsService.getDisputeDetail(user.userId, matchId, resultId);
+  }
+
+  @Post(':resultId/admin-resolve')
+  @ApiOperation({ summary: 'Resolve a disputed result as admin or group admin.' })
+  @ApiOkResponse({ type: AdminResolveResultResponseDto })
+  adminResolve(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('matchId') matchId: string,
+    @Param('resultId') resultId: string,
+    @Body() dto: AdminResolveResultDto,
+  ): Promise<AdminResolveResultResponseDto> {
+    return this.resultsService.adminResolveDispute(user.userId, matchId, resultId, dto);
+  }
+}

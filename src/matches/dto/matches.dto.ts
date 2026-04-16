@@ -78,6 +78,35 @@ export class AddMatchPlayersDto {
   players!: MatchPlayerInputDto[];
 }
 
+export class UpdateMatchPlayerDto {
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  riotAccountId?: string;
+
+  @ApiPropertyOptional({ enum: ParticipationStatus })
+  @IsOptional()
+  @IsEnum(ParticipationStatus)
+  participationStatus?: ParticipationStatus;
+
+  @ApiPropertyOptional({ type: [String] })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  sameTeamPreferenceUserIds?: string[];
+
+  @ApiPropertyOptional({ type: [String] })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  avoidTeamPreferenceUserIds?: string[];
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsBoolean()
+  isCaptain?: boolean;
+}
+
 class MatchPlayerResponseDto {
   @ApiProperty()
   id!: string;
@@ -127,3 +156,54 @@ export class MatchResponseDto {
   candidates!: unknown;
 }
 
+class MatchSummaryPlayerDto {
+  @ApiProperty()
+  userId!: string;
+
+  @ApiProperty()
+  nickname!: string;
+
+  @ApiProperty({ enum: Position, nullable: true, required: false })
+  assignedRole!: Position | null;
+
+  @ApiProperty()
+  currentPower!: number;
+
+  @ApiPropertyOptional()
+  kda!: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  laneResult!: string | null;
+}
+
+export class MatchSummaryResponseDto {
+  @ApiProperty()
+  matchId!: string;
+
+  @ApiProperty({ enum: MatchStatus })
+  status!: MatchStatus;
+
+  @ApiProperty({ enum: TeamSide, nullable: true, required: false })
+  winningTeam!: TeamSide | null;
+
+  @ApiPropertyOptional()
+  resultStatus!: string | null;
+
+  @ApiPropertyOptional()
+  mvpUserId!: string | null;
+
+  @ApiPropertyOptional()
+  balanceRating!: number | null;
+
+  @ApiProperty()
+  teamAPower!: number;
+
+  @ApiProperty()
+  teamBPower!: number;
+
+  @ApiProperty({ type: [MatchSummaryPlayerDto] })
+  teamA!: MatchSummaryPlayerDto[];
+
+  @ApiProperty({ type: [MatchSummaryPlayerDto] })
+  teamB!: MatchSummaryPlayerDto[];
+}

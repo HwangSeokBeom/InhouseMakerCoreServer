@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { Position } from '@prisma/client';
+import { Position, UserStatus } from '@prisma/client';
 import { Type } from 'class-transformer';
 import {
   IsArray,
@@ -51,6 +51,9 @@ export class MeResponseDto {
 
   @ApiProperty()
   nickname!: string;
+
+  @ApiProperty({ enum: UserStatus })
+  status!: UserStatus;
 
   @ApiPropertyOptional({ enum: Position })
   primaryPosition!: Position | null;
@@ -110,4 +113,59 @@ class InhouseHistoryItemDto {
 export class InhouseHistoryResponseDto {
   @ApiProperty({ type: [InhouseHistoryItemDto] })
   items!: InhouseHistoryItemDto[];
+}
+
+export class UserStatsQueryDto {
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  groupId?: string;
+}
+
+class UserMainPositionDto {
+  @ApiProperty({ enum: Position })
+  position!: Position;
+
+  @ApiProperty()
+  games!: number;
+}
+
+class PowerTrendSummaryDto {
+  @ApiProperty({ enum: ['UP', 'DOWN', 'STABLE'] })
+  direction!: 'UP' | 'DOWN' | 'STABLE';
+
+  @ApiProperty()
+  delta!: number;
+}
+
+export class UserStatsResponseDto {
+  @ApiProperty()
+  userId!: string;
+
+  @ApiProperty()
+  totalGames!: number;
+
+  @ApiProperty()
+  wins!: number;
+
+  @ApiProperty()
+  losses!: number;
+
+  @ApiProperty()
+  winRate!: number;
+
+  @ApiProperty({ type: [String] })
+  recentForm!: string[];
+
+  @ApiProperty({ type: [UserMainPositionDto] })
+  mainPositions!: UserMainPositionDto[];
+
+  @ApiProperty({ type: PowerTrendSummaryDto })
+  powerTrendSummary!: PowerTrendSummaryDto;
+
+  @ApiProperty()
+  currentPower!: number;
+
+  @ApiPropertyOptional()
+  groupRank!: number | null;
 }

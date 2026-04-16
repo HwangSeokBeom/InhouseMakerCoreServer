@@ -1,4 +1,5 @@
 import {
+  AuthProvider,
   ConfirmationAction,
   GroupRole,
   GroupVisibility,
@@ -16,13 +17,10 @@ import {
   TeamSide,
   VerificationStatus,
 } from '@prisma/client';
-import { hash } from 'bcryptjs';
 
 const prisma = new PrismaClient();
 
 async function main(): Promise<void> {
-  const passwordHash = await hash('replace_me_123', 10);
-
   const users = await Promise.all([
     prisma.user.upsert({
       where: { email: 'host@example.com' },
@@ -30,8 +28,8 @@ async function main(): Promise<void> {
       create: {
         id: 'seed_user_host',
         email: 'host@example.com',
-        passwordHash,
         nickname: 'HostOne',
+        isAdmin: true,
         primaryPosition: Position.MID,
         secondaryPosition: Position.ADC,
         isFillAvailable: false,
@@ -44,7 +42,6 @@ async function main(): Promise<void> {
       create: {
         id: 'seed_user_top',
         email: 'top@example.com',
-        passwordHash,
         nickname: 'TopGap',
         primaryPosition: Position.TOP,
         secondaryPosition: Position.JUNGLE,
@@ -58,7 +55,6 @@ async function main(): Promise<void> {
       create: {
         id: 'seed_user_support',
         email: 'support@example.com',
-        passwordHash,
         nickname: 'VisionLord',
         primaryPosition: Position.SUPPORT,
         secondaryPosition: Position.ADC,
@@ -67,6 +63,47 @@ async function main(): Promise<void> {
       },
     }),
   ]);
+
+  await Promise.all(
+    [
+      {
+        userId: users[0].id,
+        provider: AuthProvider.APPLE,
+        providerUserId: 'seed-apple-host',
+        email: users[0].email,
+      },
+      {
+        userId: users[1].id,
+        provider: AuthProvider.GOOGLE,
+        providerUserId: 'seed-google-top',
+        email: users[1].email,
+      },
+      {
+        userId: users[2].id,
+        provider: AuthProvider.APPLE,
+        providerUserId: 'seed-apple-support',
+        email: users[2].email,
+      },
+    ].map((identity) =>
+      prisma.authIdentity.upsert({
+        where: {
+          provider_providerUserId: {
+            provider: identity.provider,
+            providerUserId: identity.providerUserId,
+          },
+        },
+        update: {
+          email: identity.email,
+        },
+        create: {
+          userId: identity.userId,
+          provider: identity.provider,
+          providerUserId: identity.providerUserId,
+          email: identity.email,
+        },
+      }),
+    ),
+  );
 
   const group = await prisma.inhouseGroup.upsert({
     where: { id: 'seed_group_alpha' },
@@ -128,7 +165,12 @@ async function main(): Promise<void> {
   });
 
   const riotAccount = await prisma.riotAccount.upsert({
-    where: { puuid: 'seed-puuid-host' },
+    where: {
+      userId_puuid: {
+        userId: users[0].id,
+        puuid: 'seed-puuid-host',
+      },
+    },
     update: {},
     create: {
       id: 'seed_riot_host',

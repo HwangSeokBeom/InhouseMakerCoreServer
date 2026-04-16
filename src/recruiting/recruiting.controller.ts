@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiCreatedResponse,
@@ -12,6 +12,7 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-request.interface';
 import {
   CreateRecruitingPostDto,
+  RecruitingApplicantListResponseDto,
   RecruitingPostListResponseDto,
   RecruitingPostResponseDto,
   RecruitingQueryDto,
@@ -54,5 +55,34 @@ export class RecruitingController {
   ): Promise<RecruitingPostResponseDto> {
     return this.recruitingService.getPost(user.userId, postId);
   }
-}
 
+  @Post(':postId/apply')
+  @ApiOperation({ summary: 'Apply to a recruiting post.' })
+  @ApiOkResponse({ type: RecruitingPostResponseDto })
+  applyToPost(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('postId') postId: string,
+  ): Promise<RecruitingPostResponseDto> {
+    return this.recruitingService.applyToPost(user.userId, postId);
+  }
+
+  @Delete(':postId/apply')
+  @ApiOperation({ summary: 'Cancel a recruiting post application.' })
+  @ApiOkResponse({ type: RecruitingPostResponseDto })
+  cancelApplication(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('postId') postId: string,
+  ): Promise<RecruitingPostResponseDto> {
+    return this.recruitingService.cancelApplication(user.userId, postId);
+  }
+
+  @Get(':postId/applicants')
+  @ApiOperation({ summary: 'List applicants for a recruiting post.' })
+  @ApiOkResponse({ type: RecruitingApplicantListResponseDto })
+  getApplicants(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('postId') postId: string,
+  ): Promise<RecruitingApplicantListResponseDto> {
+    return this.recruitingService.listApplicants(user.userId, postId);
+  }
+}

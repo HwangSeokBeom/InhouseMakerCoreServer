@@ -4,11 +4,15 @@ import {
   IsArray,
   IsDateString,
   IsEnum,
+  IsInt,
   IsOptional,
   IsString,
+  Max,
   MaxLength,
+  Min,
   MinLength,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 
 export class CreateRecruitingPostDto {
   @ApiProperty()
@@ -66,6 +70,16 @@ export class RecruitingQueryDto {
   status?: RecruitingPostStatus;
 }
 
+export class PublicRecruitingQueryDto extends RecruitingQueryDto {
+  @ApiPropertyOptional({ default: 20, minimum: 1, maximum: 50 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(50)
+  limit?: number = 20;
+}
+
 class RecruitingPostDto {
   @ApiProperty()
   id!: string;
@@ -105,3 +119,18 @@ export class RecruitingPostResponseDto extends RecruitingPostDto {
   createdBy!: string;
 }
 
+class RecruitingApplicantDto {
+  @ApiProperty()
+  userId!: string;
+
+  @ApiProperty()
+  nickname!: string;
+
+  @ApiProperty()
+  appliedAt!: string;
+}
+
+export class RecruitingApplicantListResponseDto {
+  @ApiProperty({ type: [RecruitingApplicantDto] })
+  items!: RecruitingApplicantDto[];
+}

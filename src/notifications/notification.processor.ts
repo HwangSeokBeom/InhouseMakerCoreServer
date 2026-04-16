@@ -17,8 +17,7 @@ export class NotificationProcessor extends WorkerHost {
     this.logger.log(`Processing notification job ${job.name} for ${job.data.notificationId}`);
 
     if (job.name === JOB_NAMES.SEND_NOTIFICATION) {
-      await this.notificationService.markSent(job.data.notificationId);
+      await this.notificationService.dispatch(job.data.notificationId);
     }
   }
 }
-

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiCreatedResponse,
@@ -14,7 +14,11 @@ import {
   AddGroupMemberDto,
   CreateGroupDto,
   GroupDetailResponseDto,
+  GroupLeaderboardQueryDto,
+  GroupLeaderboardResponseDto,
   GroupMemberListResponseDto,
+  GroupRecentMatchesResponseDto,
+  RecentGroupMatchesQueryDto,
 } from './dto/groups.dto';
 import { GroupsService } from './groups.service';
 
@@ -65,5 +69,26 @@ export class GroupsController {
   ): Promise<GroupMemberListResponseDto> {
     return this.groupsService.listMembers(user.userId, groupId);
   }
-}
 
+  @Get(':groupId/leaderboard')
+  @ApiOperation({ summary: 'Get group leaderboard summary.' })
+  @ApiOkResponse({ type: GroupLeaderboardResponseDto })
+  getLeaderboard(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('groupId') groupId: string,
+    @Query() query: GroupLeaderboardQueryDto,
+  ): Promise<GroupLeaderboardResponseDto> {
+    return this.groupsService.getLeaderboard(user.userId, groupId, query);
+  }
+
+  @Get(':groupId/matches/recent')
+  @ApiOperation({ summary: 'Get recent matches for a group.' })
+  @ApiOkResponse({ type: GroupRecentMatchesResponseDto })
+  getRecentMatches(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('groupId') groupId: string,
+    @Query() query: RecentGroupMatchesQueryDto,
+  ): Promise<GroupRecentMatchesResponseDto> {
+    return this.groupsService.getRecentMatches(user.userId, groupId, query);
+  }
+}

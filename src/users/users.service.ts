@@ -11,6 +11,8 @@ import {
   InhouseHistoryQueryDto,
   InhouseHistoryResponseDto,
   MeResponseDto,
+  UserStatsQueryDto,
+  UserStatsResponseDto,
   UpdateMyProfileDto,
 } from './dto/profile.dto';
 
@@ -31,6 +33,7 @@ export class UsersService {
       id: user.id,
       email: user.email,
       nickname: user.nickname,
+      status: user.status,
       primaryPosition: user.primaryPosition,
       secondaryPosition: user.secondaryPosition,
       isFillAvailable: user.isFillAvailable,
@@ -117,6 +120,84 @@ export class UsersService {
     };
   }
 
+  async getUserStats(
+    currentUser: AuthenticatedUser,
+    targetUserId: string,
+    query: UserStatsQueryDto,
+  ): Promise<UserStatsResponseDto> {
+    await this.assertCanAccessUserScopedResource(
+      currentUser.userId,
+      targetUserId,
+      query.groupId,
+    );
+
+    const [stats, powerProfile] = await Promise.all([
+      this.prismaService.inhousePlayerStat.findMany({
+        where: {
+          userId: targetUserId,
+          match: {
+            ...(query.groupId ? { groupId: query.groupId } : {}),
+            result: {
+              is: {
+                resultStatus: ResultStatus.CONFIRMED,
+              },
+            },
+          },
+        },
+        include: {
+          match: {
+            include: {
+              result: true,
+            },
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+      }),
+      this.prismaService.playerPowerProfile.findUnique({
+        where: { userId: targetUserId },
+      }),
+    ]);
+
+    const totalGames = stats.length;
+    const wins = stats.filter((stat) => stat.match.result?.winningTeam === stat.teamSide).length;
+    const losses = totalGames - wins;
+    const recentForm = stats.slice(0, 5).map((stat) =>
+      stat.match.result?.winningTeam === stat.teamSide ? 'W' : 'L',
+    );
+    const positionCounts = stats.reduce<Record<string, number>>((acc, stat) => {
+      acc[stat.role] = (acc[stat.role] ?? 0) + 1;
+      return acc;
+    }, {});
+    const mainPositions = Object.entries(positionCounts)
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, 2)
+      .map(([position, games]) => ({
+        position: position as any,
+        games,
+      }));
+    const currentPower = powerProfile?.overallPower ?? 0;
+    const powerDelta = Number((currentPower - (powerProfile?.basePower ?? currentPower)).toFixed(2));
+    const groupRank = query.groupId
+      ? await this.resolveGroupRank(query.groupId, targetUserId)
+      : null;
+
+    return {
+      userId: targetUserId,
+      totalGames,
+      wins,
+      losses,
+      winRate: totalGames > 0 ? Number((wins / totalGames).toFixed(4)) : 0,
+      recentForm,
+      mainPositions,
+      powerTrendSummary: {
+        direction: powerDelta > 2 ? 'UP' : powerDelta < -2 ? 'DOWN' : 'STABLE',
+        delta: powerDelta,
+      },
+      currentPower,
+      groupRank,
+    };
+  }
+
   async assertCanAccessUserScopedResource(
     requesterUserId: string,
     targetUserId: string,
@@ -170,5 +251,31 @@ export class UsersService {
 
   private parseStringArray(value: unknown): string[] {
     return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+  }
+
+  private async resolveGroupRank(
+    groupId: string,
+    targetUserId: string,
+  ): Promise<number | null> {
+    const members = await this.prismaService.groupMember.findMany({
+      where: { groupId },
+      include: {
+        user: {
+          include: {
+            powerProfile: true,
+          },
+        },
+      },
+    });
+
+    const ranked = [...members]
+      .sort(
+        (left, right) =>
+          (right.user.powerProfile?.overallPower ?? 0) - (left.user.powerProfile?.overallPower ?? 0),
+      )
+      .map((member) => member.userId);
+
+    const index = ranked.indexOf(targetUserId);
+    return index >= 0 ? index + 1 : null;
   }
 }

@@ -1,5 +1,6 @@
 import {
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
@@ -21,9 +22,11 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-request.interface';
 import {
   CreateRiotAccountDto,
+  RiotAccountDeleteResponseDto,
   RiotAccountListResponseDto,
   RiotAccountResponseDto,
   RiotAccountSyncAcceptedDto,
+  RiotAccountSyncStatusResponseDto,
 } from './dto/riot-account.dto';
 import { RiotService } from './riot.service';
 
@@ -35,7 +38,7 @@ export class RiotController {
   constructor(private readonly riotService: RiotService) {}
 
   @Post()
-  @ApiOperation({ summary: 'Connect a Riot account by Riot ID and TagLine.' })
+  @ApiOperation({ summary: 'Add a Riot account reference by Riot ID and TagLine.' })
   @ApiCreatedResponse({ type: RiotAccountResponseDto })
   connectAccount(
     @CurrentUser() user: AuthenticatedUser,
@@ -45,7 +48,7 @@ export class RiotController {
   }
 
   @Get()
-  @ApiOperation({ summary: 'List the current user connected Riot accounts.' })
+  @ApiOperation({ summary: 'List the current user Riot account references.' })
   @ApiOkResponse({ type: RiotAccountListResponseDto })
   listAccounts(
     @CurrentUser() user: AuthenticatedUser,
@@ -61,11 +64,26 @@ export class RiotController {
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
   ): Promise<RiotAccountSyncAcceptedDto> {
-    await this.riotService.enqueueSync(user.userId, id);
-    return {
-      riotAccountId: id,
-      queued: true,
-    };
+    return this.riotService.enqueueSync(user.userId, id);
+  }
+
+  @Get(':id/sync-status')
+  @ApiOperation({ summary: 'Get current Riot account sync status.' })
+  @ApiOkResponse({ type: RiotAccountSyncStatusResponseDto })
+  getSyncStatus(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ): Promise<RiotAccountSyncStatusResponseDto> {
+    return this.riotService.getSyncStatus(user.userId, id);
+  }
+
+  @Delete(':id')
+  @ApiOperation({ summary: 'Delete a Riot account reference from the current user list.' })
+  @ApiOkResponse({ type: RiotAccountDeleteResponseDto })
+  deleteAccount(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ): Promise<RiotAccountDeleteResponseDto> {
+    return this.riotService.deleteForUser(user.userId, id);
   }
 }
-

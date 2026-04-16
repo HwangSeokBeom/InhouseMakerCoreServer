@@ -7,6 +7,9 @@ import { AuthenticatedUser } from '../common/interfaces/authenticated-request.in
 import {
   InhouseHistoryQueryDto,
   InhouseHistoryResponseDto,
+  MeResponseDto,
+  UserStatsQueryDto,
+  UserStatsResponseDto,
 } from './dto/profile.dto';
 import { UsersService } from './users.service';
 
@@ -16,6 +19,13 @@ import { UsersService } from './users.service';
 @Controller('users')
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
+
+  @Get('me')
+  @ApiOperation({ summary: 'Get current authenticated user profile.' })
+  @ApiOkResponse({ type: MeResponseDto })
+  getMe(@CurrentUser() user: AuthenticatedUser): Promise<MeResponseDto> {
+    return this.usersService.getMe(user.userId);
+  }
 
   @Get(':userId/inhouse-history')
   @ApiOperation({ summary: 'Get inhouse match history for a user.' })
@@ -27,5 +37,15 @@ export class UsersController {
   ): Promise<InhouseHistoryResponseDto> {
     return this.usersService.getInhouseHistory(user, userId, query);
   }
-}
 
+  @Get(':userId/stats')
+  @ApiOperation({ summary: 'Get user-level inhouse stats summary.' })
+  @ApiOkResponse({ type: UserStatsResponseDto })
+  getUserStats(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('userId') userId: string,
+    @Query() query: UserStatsQueryDto,
+  ): Promise<UserStatsResponseDto> {
+    return this.usersService.getUserStats(user, userId, query);
+  }
+}

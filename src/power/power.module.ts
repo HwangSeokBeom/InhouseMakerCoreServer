@@ -3,6 +3,7 @@ import { Module } from '@nestjs/common';
 import { UserModule } from '../users/users.module';
 import { BasePowerCalculator } from './calculators/base-power.calculator';
 import { FormScoreCalculator } from './calculators/form-score.calculator';
+import { InhouseMmrCalculator } from './calculators/inhouse-mmr.calculator';
 import { LanePowerCalculator } from './calculators/lane-power.calculator';
 import { OverallPowerCalculator } from './calculators/overall-power.calculator';
 import { StyleScoreCalculator } from './calculators/style-score.calculator';
@@ -18,6 +19,7 @@ import { PowerService } from './power.service';
     PowerProcessor,
     BasePowerCalculator,
     FormScoreCalculator,
+    InhouseMmrCalculator,
     LanePowerCalculator,
     StyleScoreCalculator,
     OverallPowerCalculator,

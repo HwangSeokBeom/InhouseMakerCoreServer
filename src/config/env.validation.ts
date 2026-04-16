@@ -13,6 +13,12 @@ export interface AppConfig {
   RIOT_API_KEY: string;
   RIOT_ACCOUNT_REGION: string;
   RIOT_PLATFORM_REGION: string;
+  RIOT_SYNC_MAX_RETRIES: number;
+  RIOT_SYNC_BACKOFF_MS: number;
+  APPLE_CLIENT_ID?: string;
+  APPLE_AUDIENCE?: string;
+  GOOGLE_CLIENT_ID?: string;
+  GOOGLE_AUDIENCE?: string;
   ALLOW_SWAGGER: boolean;
 }
 
@@ -29,6 +35,11 @@ export const envValidationSchema = Joi.object<AppConfig>({
   RIOT_API_KEY: Joi.string().required(),
   RIOT_ACCOUNT_REGION: Joi.string().required(),
   RIOT_PLATFORM_REGION: Joi.string().required(),
+  RIOT_SYNC_MAX_RETRIES: Joi.number().integer().min(1).default(5),
+  RIOT_SYNC_BACKOFF_MS: Joi.number().integer().min(100).default(2000),
+  APPLE_CLIENT_ID: Joi.string().optional(),
+  APPLE_AUDIENCE: Joi.string().optional(),
+  GOOGLE_CLIENT_ID: Joi.string().optional(),
+  GOOGLE_AUDIENCE: Joi.string().optional(),
   ALLOW_SWAGGER: Joi.boolean().truthy('true').truthy('1').falsy('false').falsy('0').default(true),
 });
-

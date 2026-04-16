@@ -11,7 +11,13 @@ import {
   AddGroupMemberDto,
   CreateGroupDto,
   GroupDetailResponseDto,
+  GroupLeaderboardQueryDto,
+  GroupLeaderboardResponseDto,
   GroupMemberListResponseDto,
+  GroupRecentMatchesResponseDto,
+  PublicGroupListResponseDto,
+  PublicGroupsQueryDto,
+  RecentGroupMatchesQueryDto,
 } from './dto/groups.dto';
 
 @Injectable()
@@ -49,6 +55,38 @@ export class GroupsService {
       ownerUserId: group.ownerUserId,
       memberCount: 1,
       recentMatches: 0,
+    };
+  }
+
+  async listPublicGroups(query: PublicGroupsQueryDto): Promise<PublicGroupListResponseDto> {
+    const groups = await this.prismaService.inhouseGroup.findMany({
+      where: {
+        visibility: GroupVisibility.PUBLIC,
+      },
+      include: {
+        _count: {
+          select: {
+            members: true,
+            matches: true,
+          },
+        },
+      },
+      orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }],
+      take: query.limit ?? 20,
+    });
+
+    return {
+      items: groups.map((group) => ({
+        id: group.id,
+        name: group.name,
+        description: group.description,
+        visibility: group.visibility,
+        joinPolicy: group.joinPolicy,
+        tags: this.toStringArray(group.tags),
+        ownerUserId: group.ownerUserId,
+        memberCount: group._count.members,
+        recentMatches: group._count.matches,
+      })),
     };
   }
 
@@ -137,6 +175,129 @@ export class GroupsService {
         userId: member.userId,
         nickname: member.user.nickname,
         role: member.role,
+      })),
+    };
+  }
+
+  async getLeaderboard(
+    requesterUserId: string,
+    groupId: string,
+    query: GroupLeaderboardQueryDto,
+  ): Promise<GroupLeaderboardResponseDto> {
+    await this.assertGroupMember(groupId, requesterUserId);
+
+    const members = await this.prismaService.groupMember.findMany({
+      where: { groupId },
+      include: {
+        user: {
+          include: {
+            powerProfile: true,
+          },
+        },
+      },
+    });
+    const stats = await this.prismaService.inhousePlayerStat.findMany({
+      where: {
+        userId: {
+          in: members.map((member) => member.userId),
+        },
+        match: {
+          groupId,
+          result: {
+            is: {
+              resultStatus: 'CONFIRMED',
+            },
+          },
+        },
+      },
+      include: {
+        match: {
+          include: {
+            result: true,
+          },
+        },
+      },
+    });
+
+    const aggregates = stats.reduce<Record<string, { totalGames: number; wins: number }>>(
+      (acc, stat) => {
+        const record = acc[stat.userId] ?? { totalGames: 0, wins: 0 };
+        record.totalGames += 1;
+        if (stat.match.result?.winningTeam === stat.teamSide) {
+          record.wins += 1;
+        }
+        acc[stat.userId] = record;
+        return acc;
+      },
+      {},
+    );
+
+    const ranked = members
+      .map((member) => {
+        const aggregate = aggregates[member.userId] ?? { totalGames: 0, wins: 0 };
+        const losses = aggregate.totalGames - aggregate.wins;
+        const currentPower = member.user.powerProfile?.overallPower ?? 0;
+        return {
+          userId: member.userId,
+          nickname: member.user.nickname,
+          currentPower,
+          totalGames: aggregate.totalGames,
+          wins: aggregate.wins,
+          losses,
+          winRate:
+            aggregate.totalGames > 0
+              ? Number((aggregate.wins / aggregate.totalGames).toFixed(4))
+              : 0,
+        };
+      })
+      .sort((left, right) => {
+        if (right.currentPower !== left.currentPower) {
+          return right.currentPower - left.currentPower;
+        }
+        if (right.winRate !== left.winRate) {
+          return right.winRate - left.winRate;
+        }
+        return left.nickname.localeCompare(right.nickname);
+      })
+      .slice(0, query.limit ?? 20)
+      .map((item, index) => ({
+        ...item,
+        groupRank: index + 1,
+      }));
+
+    return {
+      items: ranked,
+    };
+  }
+
+  async getRecentMatches(
+    requesterUserId: string,
+    groupId: string,
+    query: RecentGroupMatchesQueryDto,
+  ): Promise<GroupRecentMatchesResponseDto> {
+    await this.assertGroupMember(groupId, requesterUserId);
+
+    const matches = await this.prismaService.inhouseMatch.findMany({
+      where: { groupId },
+      include: {
+        result: true,
+        players: {
+          select: { id: true },
+        },
+      },
+      orderBy: [{ scheduledAt: 'desc' }, { createdAt: 'desc' }],
+      take: query.limit ?? 10,
+    });
+
+    return {
+      items: matches.map((match) => ({
+        matchId: match.id,
+        title: match.title,
+        status: match.status,
+        scheduledAt: match.scheduledAt?.toISOString() ?? null,
+        winningTeam: match.result?.winningTeam ?? null,
+        resultStatus: match.result?.resultStatus ?? null,
+        playerCount: match.players.length,
       })),
     };
   }

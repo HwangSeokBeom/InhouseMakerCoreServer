@@ -19,11 +19,14 @@ export class RiotProcessor extends WorkerHost {
     switch (job.name) {
       case JOB_NAMES.RIOT_ACCOUNT_INITIAL_SYNC:
       case JOB_NAMES.RIOT_ACCOUNT_REFRESH:
-        await this.riotService.syncAccount(job.data.riotAccountId);
+        await this.riotService.syncAccount(
+          job.data.riotAccountId,
+          job.attemptsMade,
+          job.opts.attempts ?? 1,
+        );
         break;
       default:
         this.logger.warn(`Unhandled Riot job ${job.name}`);
     }
   }
 }
-

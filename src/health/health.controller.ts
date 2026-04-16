@@ -22,9 +22,9 @@ export class HealthController {
     status: string;
     database: string;
     redis: string;
+    queues: string;
     timestamp: string;
   }> {
     return this.healthService.getReadiness();
   }
 }
-

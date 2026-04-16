@@ -96,9 +96,14 @@ enum ConfirmationAction {
 
 enum NotificationType {
   RESULT_CONFIRMATION_REQUEST
+  RESULT_DISPUTED
   GROUP_INVITE
+  RECRUITING_POSTED
+  RECRUITING_APPLIED
+  RECRUITING_APPLICATION_CANCELLED
   RECRUITING_CLOSED
   RESULT_CONFIRMED
+  RESULT_ADMIN_RESOLVED
 }
 
 enum NotificationStatus {
@@ -125,25 +130,49 @@ enum RecruitingPostStatus {
   CANCELLED
 }
 
+enum RiotSyncStatus {
+  IDLE
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  PARTIAL
+  FAILED
+  RETRY_SCHEDULED
+}
+
 enum BalanceMode {
   BALANCED
   POSITION_FIRST
   SKILL_FIRST
 }
 
+enum AuthProvider {
+  EMAIL
+  APPLE
+  GOOGLE
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+}
+
 model User {
   id               String                @id @default(cuid())
   email            String                @unique
-  appleSub         String?               @unique @map("apple_sub")
-  passwordHash     String?               @map("password_hash")
+  status           UserStatus            @default(ACTIVE)
   refreshTokenHash String?               @map("refresh_token_hash")
-  nickname         String
+  nickname         String                @unique
+  termsAgreedAt    DateTime?             @map("terms_agreed_at")
+  privacyAgreedAt  DateTime?             @map("privacy_agreed_at")
+  marketingOptInAt DateTime?             @map("marketing_opt_in_at")
   primaryPosition  Position?             @map("primary_position")
   secondaryPosition Position?            @map("secondary_position")
   isFillAvailable  Boolean               @default(false) @map("is_fill_available")
   styleTags        Json?                 @map("style_tags")
   mannerScore      Float                 @default(100) @map("manner_score")
   noshowCount      Int                   @default(0) @map("noshow_count")
+  isAdmin          Boolean               @default(false) @map("is_admin")
   createdAt        DateTime              @default(now()) @map("created_at")
   updatedAt        DateTime              @updatedAt @map("updated_at")
 
@@ -154,14 +183,38 @@ model User {
   createdMatches           InhouseMatch[]          @relation("match_created_by")
   submittedMatchResults    InhouseMatchResult[]    @relation("match_result_submitted_by")
   mvpMatchResults          InhouseMatchResult[]    @relation("match_result_mvp_user")
+  adminResolvedMatchResults InhouseMatchResult[]   @relation("match_result_admin_resolved_by")
   matchPlayers             InhouseMatchPlayer[]
   playerStats              InhousePlayerStat[]
   resultConfirmations      MatchResultConfirmation[]
   notifications            Notification[]
   auditLogs                AuditLog[]
   createdRecruitingPosts   RecruitingPost[]        @relation("recruiting_post_created_by")
+  recruitingApplications   RecruitingPostApplication[]
+  authIdentities           AuthIdentity[]
 
   @@map("users")
+}
+
+model AuthIdentity {
+  id             String       @id @default(cuid())
+  userId         String       @map("user_id")
+  provider       AuthProvider
+  providerUserId String       @map("provider_user_id")
+  email          String?
+  passwordHash   String?      @map("password_hash")
+  linkedAt       DateTime     @default(now()) @map("linked_at")
+  lastLoginAt    DateTime?    @map("last_login_at")
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerUserId])
+  @@unique([userId, provider])
+  @@index([email])
+  @@index([userId, lastLoginAt])
+  @@map("auth_identities")
 }
 
 model RiotAccount {
@@ -170,10 +223,21 @@ model RiotAccount {
   riotGameName       String                 @map("riot_game_name")
   tagLine            String                 @map("tag_line")
   region             String
-  puuid              String                 @unique
+  puuid              String
   summonerId         String?                @map("summoner_id")
+  profileIconId      Int?                   @map("profile_icon_id")
+  summonerLevel      Int?                   @map("summoner_level")
+  summonerRevisionDate DateTime?            @map("summoner_revision_date")
   isPrimary          Boolean                @default(false) @map("is_primary")
   verificationStatus VerificationStatus     @default(CLAIMED) @map("verification_status")
+  syncStatus         RiotSyncStatus         @default(IDLE) @map("sync_status")
+  lastSyncRequestedAt DateTime?             @map("last_sync_requested_at")
+  lastSyncSucceededAt DateTime?             @map("last_sync_succeeded_at")
+  lastSyncFailedAt    DateTime?             @map("last_sync_failed_at")
+  lastSyncErrorCode   String?               @map("last_sync_error_code")
+  lastSyncErrorMessage String?              @map("last_sync_error_message")
+  lastSyncWarningCode String?               @map("last_sync_warning_code")
+  lastSyncWarningMessage String?            @map("last_sync_warning_message")
   lastSyncedAt       DateTime?              @map("last_synced_at")
   lastSyncError      String?                @map("last_sync_error")
   createdAt          DateTime               @default(now()) @map("created_at")
@@ -184,8 +248,10 @@ model RiotAccount {
   powerProfiles PlayerPowerProfile[]
   matchPlayers  InhouseMatchPlayer[]
 
+  @@unique([userId, puuid])
   @@index([userId, isPrimary])
   @@index([userId, lastSyncedAt])
+  @@index([syncStatus, lastSyncRequestedAt])
   @@map("riot_accounts")
 }
 
@@ -218,6 +284,7 @@ model PlayerPowerProfile {
   inhouseMmr           Float       @default(1500) @map("inhouse_mmr")
   inhouseConfidence    Float       @default(0) @map("inhouse_confidence")
   lanePowerJson        Json?       @map("lane_power_json")
+  breakdownJson        Json?       @map("breakdown_json")
   overallPower         Float       @default(0) @map("overall_power")
   confirmedMatchCount  Int         @default(0) @map("confirmed_match_count")
   version              String
@@ -333,6 +400,9 @@ model InhouseMatchResult {
   notes             String?
   payloadJson       Json?        @map("payload_json")
   idempotencyKey    String?      @map("idempotency_key")
+  adminResolvedById String?      @map("admin_resolved_by_id")
+  adminResolutionNote String?    @map("admin_resolution_note")
+  adminResolvedAt   DateTime?    @map("admin_resolved_at")
   version           Int          @default(1)
   createdAt         DateTime     @default(now()) @map("created_at")
   updatedAt         DateTime     @updatedAt @map("updated_at")
@@ -340,9 +410,11 @@ model InhouseMatchResult {
   match          InhouseMatch              @relation(fields: [matchId], references: [id], onDelete: Cascade)
   submittedByUser User                     @relation("match_result_submitted_by", fields: [submittedBy], references: [id], onDelete: Restrict)
   mvpUser         User?                    @relation("match_result_mvp_user", fields: [mvpUserId], references: [id], onDelete: SetNull)
+  adminResolvedByUser User?                @relation("match_result_admin_resolved_by", fields: [adminResolvedById], references: [id], onDelete: SetNull)
   confirmations   MatchResultConfirmation[]
 
   @@index([resultStatus, createdAt])
+  @@index([adminResolvedById, adminResolvedAt])
   @@map("inhouse_match_results")
 }
 
@@ -386,9 +458,26 @@ model RecruitingPost {
 
   group         InhouseGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
   createdByUser User         @relation("recruiting_post_created_by", fields: [createdBy], references: [id], onDelete: Restrict)
+  applications  RecruitingPostApplication[]
 
   @@index([groupId, status, scheduledAt])
   @@map("recruiting_posts")
+}
+
+model RecruitingPostApplication {
+  id        String   @id @default(cuid())
+  postId    String   @map("post_id")
+  userId    String   @map("user_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  post RecruitingPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([postId, userId])
+  @@index([postId, createdAt])
+  @@index([userId, createdAt])
+  @@map("recruiting_post_applications")
 }
 
 model MatchResultConfirmation {
@@ -429,6 +518,8 @@ model Notification {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, status, createdAt])
+  @@index([userId, readAt, createdAt])
+  @@index([userId, type, createdAt])
   @@map("notifications")
 }
 
