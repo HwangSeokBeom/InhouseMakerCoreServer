@@ -1,5 +1,5 @@
 import { ForbiddenException, NotFoundException } from '@nestjs/common';
-import { GroupRole, GroupVisibility, JoinPolicy } from '@prisma/client';
+import { GroupRole, GroupVisibility, JoinPolicy, Position } from '@prisma/client';
 
 import { AppException } from '../src/common/app.exception';
 import { GroupsService } from '../src/groups/groups.service';
@@ -22,6 +22,7 @@ describe('GroupsService', () => {
     },
     user: {
       findUnique: jest.fn(),
+      findMany: jest.fn(),
     },
   } as any;
   const auditLogService = {
@@ -87,6 +88,16 @@ describe('GroupsService', () => {
         tags: ['casual'],
       },
       include: {
+        members: {
+          where: {
+            userId: 'owner1',
+          },
+          select: {
+            userId: true,
+            role: true,
+          },
+          take: 1,
+        },
         _count: {
           select: {
             members: true,
@@ -274,7 +285,7 @@ describe('GroupsService', () => {
       expect(getExceptionBody(error)).toMatchObject({
         code: 'GROUP_ACCESS_FORBIDDEN',
         details: {
-          reason: 'GROUP_ACCESS_FORBIDDEN',
+          reason: 'NOT_GROUP_MEMBER',
         },
       });
     }
@@ -350,6 +361,216 @@ describe('GroupsService', () => {
         userId: 'u2',
         groupRank: 1,
       }),
+    );
+  });
+
+  it('returns USER_NOT_FOUND before Prisma FK errors when adding a missing user', async () => {
+    prismaService.inhouseGroup.findFirst.mockResolvedValue(
+      makeGroup({
+        members: [{ userId: 'leader1', role: GroupRole.OWNER }],
+      }),
+    );
+    prismaService.user.findUnique.mockResolvedValue(null);
+
+    try {
+      await service.addMember('leader1', 'group1', {
+        userId: 'missing-user',
+      });
+      throw new Error('Expected addMember to fail');
+    } catch (error) {
+      expect(error).toBeInstanceOf(AppException);
+      expect(getExceptionBody(error)).toMatchObject({
+        code: 'USER_NOT_FOUND',
+        details: {
+          groupId: 'group1',
+          userId: 'missing-user',
+        },
+      });
+    }
+
+    expect(prismaService.groupMember.create).not.toHaveBeenCalled();
+  });
+
+  it('returns GROUP_MEMBER_ALREADY_EXISTS when adding an existing member', async () => {
+    prismaService.inhouseGroup.findFirst.mockResolvedValue(
+      makeGroup({
+        members: [{ userId: 'leader1', role: GroupRole.OWNER }],
+      }),
+    );
+    prismaService.user.findUnique.mockResolvedValue({ id: 'member1' });
+    prismaService.groupMember.findUnique.mockResolvedValue({
+      id: 'membership1',
+      role: GroupRole.MEMBER,
+    });
+
+    try {
+      await service.addMember('leader1', 'group1', {
+        userId: 'member1',
+      });
+      throw new Error('Expected duplicate member add to fail');
+    } catch (error) {
+      expect(error).toBeInstanceOf(AppException);
+      expect(getExceptionBody(error)).toMatchObject({
+        code: 'GROUP_MEMBER_ALREADY_EXISTS',
+        details: {
+          groupId: 'group1',
+          userId: 'member1',
+          role: GroupRole.MEMBER,
+        },
+      });
+    }
+
+    expect(prismaService.groupMember.create).not.toHaveBeenCalled();
+  });
+
+  it('returns GROUP_ACCESS_FORBIDDEN when a non-leader tries to add members', async () => {
+    prismaService.inhouseGroup.findFirst.mockResolvedValue(
+      makeGroup({
+        members: [{ userId: 'member1', role: GroupRole.MEMBER }],
+      }),
+    );
+
+    try {
+      await service.addMember('member1', 'group1', {
+        userId: 'target1',
+      });
+      throw new Error('Expected non-admin addMember to fail');
+    } catch (error) {
+      expect(error).toBeInstanceOf(AppException);
+      expect(getExceptionBody(error)).toMatchObject({
+        code: 'GROUP_ACCESS_FORBIDDEN',
+        details: {
+          reason: 'NOT_GROUP_LEADER',
+        },
+      });
+    }
+  });
+
+  it('adds a member successfully after domain validation', async () => {
+    prismaService.inhouseGroup.findFirst.mockResolvedValue(
+      makeGroup({
+        members: [{ userId: 'leader1', role: GroupRole.OWNER }],
+      }),
+    );
+    prismaService.user.findUnique.mockResolvedValue({ id: 'target1' });
+    prismaService.groupMember.findUnique.mockResolvedValue(null);
+    prismaService.groupMember.create.mockResolvedValue({
+      id: 'membership2',
+    });
+    const listMembersSpy = jest
+      .spyOn(service, 'listMembers')
+      .mockResolvedValue({ items: [] });
+
+    const result = await service.addMember('leader1', 'group1', {
+      userId: 'target1',
+    });
+
+    expect(prismaService.groupMember.create).toHaveBeenCalledWith({
+      data: {
+        groupId: 'group1',
+        userId: 'target1',
+        role: GroupRole.MEMBER,
+      },
+    });
+    expect(listMembersSpy).toHaveBeenCalledWith('leader1', 'group1');
+    expect(result).toEqual({ items: [] });
+  });
+
+  it('includes capability flags on group detail for public non-members', async () => {
+    prismaService.inhouseGroup.findFirst.mockResolvedValue(
+      makeGroup({
+        visibility: GroupVisibility.PUBLIC,
+        members: [],
+      }),
+    );
+    prismaService.user.findUnique.mockResolvedValue({ isAdmin: false });
+
+    const result = await service.getGroup('viewer1', 'group1');
+
+    expect(result).toMatchObject({
+      canInviteMembers: false,
+      inviteMembersBlockedReason: 'NOT_GROUP_MEMBER',
+      canCreateMatch: false,
+      createMatchBlockedReason: 'NOT_GROUP_MEMBER',
+      canViewMembers: false,
+      viewMembersBlockedReason: 'NOT_GROUP_MEMBER',
+      canEditGroup: false,
+      editGroupBlockedReason: 'NOT_GROUP_MEMBER',
+    });
+  });
+
+  it('returns invite candidate states the client can render directly', async () => {
+    prismaService.inhouseGroup.findFirst.mockResolvedValue(
+      makeGroup({
+        members: [{ userId: 'leader1', role: GroupRole.OWNER }],
+      }),
+    );
+    prismaService.user.findMany.mockResolvedValue([
+      {
+        id: 'leader1',
+        nickname: 'Leader',
+        primaryPosition: null,
+        powerProfile: { overallPower: 72 },
+        riotAccounts: [],
+        groupMemberships: [{ role: GroupRole.OWNER }],
+      },
+      {
+        id: 'member1',
+        nickname: 'ExistingMember',
+        primaryPosition: Position.MID,
+        powerProfile: { overallPower: 80 },
+        riotAccounts: [],
+        groupMemberships: [{ role: GroupRole.MEMBER }],
+      },
+      {
+        id: 'candidate1',
+        nickname: 'Candidate',
+        primaryPosition: Position.SUPPORT,
+        powerProfile: { overallPower: 88 },
+        riotAccounts: [
+          {
+            riotGameName: 'Candidate',
+            tagLine: 'KR1',
+            region: 'kr',
+            profileIconId: 12,
+            summonerLevel: 300,
+          },
+        ],
+        groupMemberships: [],
+      },
+    ]);
+
+    const result = await service.searchMemberCandidates('leader1', 'group1', {
+      query: 'ca',
+      limit: 20,
+    });
+
+    expect(result.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          userId: 'leader1',
+          selectable: false,
+          inviteBlockedReason: 'CANNOT_ADD_SELF',
+        }),
+        expect.objectContaining({
+          userId: 'member1',
+          alreadyMember: true,
+          selectable: false,
+          inviteBlockedReason: 'ALREADY_MEMBER',
+          memberRole: GroupRole.MEMBER,
+        }),
+        expect.objectContaining({
+          userId: 'candidate1',
+          alreadyMember: false,
+          selectable: true,
+          inviteBlockedReason: null,
+          representativePosition: Position.SUPPORT,
+          riotAccountSummary: expect.objectContaining({
+            gameName: 'Candidate',
+            tagLine: 'KR1',
+          }),
+        }),
+      ]),
     );
   });
 });

@@ -58,6 +58,7 @@ describe('HTTP route registration', () => {
             updateGroup: jest.fn(),
             deleteGroup: jest.fn(),
             addMember: jest.fn(),
+            searchMemberCandidates: jest.fn(),
             listMembers: jest.fn(),
             getLeaderboard: jest.fn(),
             getRecentMatches: jest.fn(),
@@ -88,6 +89,7 @@ describe('HTTP route registration', () => {
         'DELETE /recruiting-posts/:postId',
         'PATCH /groups/:groupId',
         'DELETE /groups/:groupId',
+        'GET /groups/:groupId/member-candidates',
       ]),
     );
   });

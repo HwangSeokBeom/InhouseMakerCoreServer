@@ -1,13 +1,12 @@
 import {
   BadRequestException,
-  ConflictException,
-  ForbiddenException,
   HttpStatus,
   Injectable,
   Logger,
+  ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
-import { GroupRole, GroupVisibility } from '@prisma/client';
+import { GroupRole, GroupVisibility, UserStatus } from '@prisma/client';
 
 import { AuditLogService } from '../common/audit-log.service';
 import { AppErrorCode, AppException } from '../common/app.exception';
@@ -19,6 +18,8 @@ import {
   GroupDetailResponseDto,
   GroupLeaderboardQueryDto,
   GroupLeaderboardResponseDto,
+  GroupMemberCandidateListResponseDto,
+  GroupMemberCandidateQueryDto,
   GroupMemberListResponseDto,
   GroupRecentMatchesResponseDto,
   PublicGroupListResponseDto,
@@ -70,6 +71,19 @@ export class GroupsService {
       ownerUserId: group.ownerUserId,
       memberCount: 1,
       recentMatches: 0,
+      ...this.resolveGroupCapabilities(
+        {
+          requesterUserId: userId,
+          groupId: group.id,
+          groupExists: true,
+          groupArchivedAt: null,
+          visibility: group.visibility,
+          isMember: true,
+          isLeader: true,
+          memberRole: GroupRole.OWNER,
+        },
+        false,
+      ),
     };
   }
 
@@ -92,35 +106,48 @@ export class GroupsService {
     });
 
     return {
-      items: groups.map((group) => ({
-        id: group.id,
-        groupId: group.id,
-        name: group.name,
-        region: group.region,
-        description: group.description,
-        visibility: group.visibility,
-        joinPolicy: group.joinPolicy,
-        tags: this.toStringArray(group.tags),
-        ownerUserId: group.ownerUserId,
-        memberCount: group._count.members,
-        recentMatches: group._count.matches,
-      })),
+      items: groups.map((group) =>
+        this.toGroupDetail(
+          {
+            ...group,
+            archivedAt: null,
+          },
+          {
+            requesterUserId: null,
+            requesterIsSystemAdmin: false,
+          },
+        ),
+      ),
     };
   }
 
   async getGroup(requesterUserId: string, groupId: string): Promise<GroupDetailResponseDto> {
-    const group = await this.prismaService.inhouseGroup.findFirst({
-      where: {
-        id: groupId,
-      },
-      include: {
-        members: true,
-        matches: {
-          take: 5,
-          orderBy: { createdAt: 'desc' },
+    const [group, requesterIsSystemAdmin] = await Promise.all([
+      this.prismaService.inhouseGroup.findFirst({
+        where: {
+          id: groupId,
         },
-      },
-    });
+        include: {
+          _count: {
+            select: {
+              members: true,
+              matches: true,
+            },
+          },
+          members: {
+            where: {
+              userId: requesterUserId,
+            },
+            select: {
+              userId: true,
+              role: true,
+            },
+            take: 1,
+          },
+        },
+      }),
+      this.getRequesterAdminFlag(requesterUserId),
+    ]);
 
     if (!group) {
       const access = this.toGroupAccessContext(groupId, requesterUserId, null);
@@ -160,10 +187,14 @@ export class GroupsService {
       });
       throw this.createGroupAccessDeniedException(
         'You must be a group member to view this group.',
+        'NOT_GROUP_MEMBER',
       );
     }
 
-    return this.toGroupDetail(group);
+    return this.toGroupDetail(group, {
+      requesterUserId,
+      requesterIsSystemAdmin,
+    });
   }
 
   async updateGroup(
@@ -180,6 +211,16 @@ export class GroupsService {
         archivedAt: null,
       },
       include: {
+        members: {
+          where: {
+            userId: requesterUserId,
+          },
+          select: {
+            userId: true,
+            role: true,
+          },
+          take: 1,
+        },
         _count: {
           select: {
             members: true,
@@ -226,6 +267,16 @@ export class GroupsService {
       where: { id: groupId },
       data,
       include: {
+        members: {
+          where: {
+            userId: requesterUserId,
+          },
+          select: {
+            userId: true,
+            role: true,
+          },
+          take: 1,
+        },
         _count: {
           select: {
             members: true,
@@ -262,7 +313,10 @@ export class GroupsService {
     });
 
     this.logGroupMutation(mutationLog);
-    return this.toGroupDetail(updated);
+    return this.toGroupDetail(updated, {
+      requesterUserId,
+      requesterIsSystemAdmin: isAdmin,
+    });
   }
 
   async deleteGroup(
@@ -360,6 +414,51 @@ export class GroupsService {
       operation: 'POST /groups/:groupId/members',
     });
 
+    const role = dto.role ?? GroupRole.MEMBER;
+
+    if (role === GroupRole.OWNER) {
+      throw new AppException(
+        HttpStatus.BAD_REQUEST,
+        AppErrorCode.INVALID_MEMBER_ROLE,
+        'The owner role cannot be assigned through member invites.',
+        {
+          groupId,
+          userId: dto.userId,
+          role,
+          allowedRoles: [GroupRole.ADMIN, GroupRole.MEMBER],
+        },
+      );
+    }
+
+    const targetUser = await this.prismaService.user.findUnique({
+      where: { id: dto.userId },
+      select: { id: true },
+    });
+
+    if (!targetUser) {
+      throw new AppException(
+        HttpStatus.NOT_FOUND,
+        AppErrorCode.USER_NOT_FOUND,
+        'User not found.',
+        {
+          groupId,
+          userId: dto.userId,
+        },
+      );
+    }
+
+    if (dto.userId === requesterUserId) {
+      throw new AppException(
+        HttpStatus.BAD_REQUEST,
+        AppErrorCode.CANNOT_ADD_SELF,
+        'You cannot add yourself through the invite flow.',
+        {
+          groupId,
+          userId: dto.userId,
+        },
+      );
+    }
+
     const existing = await this.prismaService.groupMember.findUnique({
       where: {
         groupId_userId: {
@@ -370,18 +469,118 @@ export class GroupsService {
     });
 
     if (existing) {
-      throw new ConflictException('This user is already a member of the group.');
+      throw new AppException(
+        HttpStatus.CONFLICT,
+        AppErrorCode.GROUP_MEMBER_ALREADY_EXISTS,
+        'This user is already a member of the group.',
+        {
+          groupId,
+          userId: dto.userId,
+          role: existing.role,
+        },
+      );
     }
 
     await this.prismaService.groupMember.create({
       data: {
         groupId,
         userId: dto.userId,
-        role: dto.role ?? GroupRole.MEMBER,
+        role,
       },
     });
 
     return this.listMembers(requesterUserId, groupId);
+  }
+
+  async searchMemberCandidates(
+    requesterUserId: string,
+    groupId: string,
+    query: GroupMemberCandidateQueryDto,
+  ): Promise<GroupMemberCandidateListResponseDto> {
+    await this.assertGroupAdmin(groupId, requesterUserId, {
+      action: 'group_member_candidate_search_denied',
+      operation: 'GET /groups/:groupId/member-candidates',
+    });
+
+    const users = await this.prismaService.user.findMany({
+      where: {
+        status: UserStatus.ACTIVE,
+        nickname: {
+          contains: query.query,
+          mode: 'insensitive',
+        },
+      },
+      select: {
+        id: true,
+        nickname: true,
+        primaryPosition: true,
+        powerProfile: {
+          select: {
+            overallPower: true,
+          },
+        },
+        riotAccounts: {
+          where: {
+            isPrimary: true,
+          },
+          select: {
+            riotGameName: true,
+            tagLine: true,
+            region: true,
+            profileIconId: true,
+            summonerLevel: true,
+          },
+          take: 1,
+        },
+        groupMemberships: {
+          where: {
+            groupId,
+          },
+          select: {
+            role: true,
+          },
+          take: 1,
+        },
+      },
+      orderBy: [{ nickname: 'asc' }],
+      take: query.limit ?? 20,
+    });
+
+    return {
+      items: users.map((user) => {
+        const membership = user.groupMemberships[0] ?? null;
+        const isSelf = user.id === requesterUserId;
+        const alreadyMember = membership !== null;
+        const inviteBlockedReason = isSelf
+          ? 'CANNOT_ADD_SELF'
+          : alreadyMember
+            ? 'ALREADY_MEMBER'
+            : null;
+        const primaryRiotAccount = user.riotAccounts[0] ?? null;
+
+        return {
+          id: user.id,
+          userId: user.id,
+          nickname: user.nickname,
+          profileImageUrl: null,
+          riotAccountSummary: primaryRiotAccount
+            ? {
+                gameName: primaryRiotAccount.riotGameName,
+                tagLine: primaryRiotAccount.tagLine,
+                region: primaryRiotAccount.region,
+                profileIconId: primaryRiotAccount.profileIconId,
+                summonerLevel: primaryRiotAccount.summonerLevel,
+              }
+            : null,
+          representativePosition: user.primaryPosition,
+          recentPower: user.powerProfile?.overallPower ?? null,
+          alreadyMember,
+          memberRole: membership?.role ?? null,
+          selectable: inviteBlockedReason === null,
+          inviteBlockedReason,
+        };
+      }),
+    };
   }
 
   async listMembers(
@@ -605,6 +804,47 @@ export class GroupsService {
     return this.toGroupAccessContext(groupId, requesterUserId, group);
   }
 
+  async getGroupCapabilities(
+    groupId: string,
+    requesterUserId: string | null,
+  ): Promise<GroupCapabilitySnapshot> {
+    const [access, requesterIsSystemAdmin] = await Promise.all([
+      this.getGroupAccessContext(groupId, requesterUserId),
+      this.getRequesterAdminFlag(requesterUserId),
+    ]);
+
+    return this.resolveGroupCapabilities(access, requesterIsSystemAdmin);
+  }
+
+  resolveGroupCapabilities(
+    access: GroupAccessContext,
+    requesterIsSystemAdmin = false,
+  ): GroupCapabilitySnapshot {
+    const invite = this.resolveCapability(access, requesterIsSystemAdmin, 'invite');
+    const createMatch = this.resolveCapability(
+      access,
+      requesterIsSystemAdmin,
+      'createMatch',
+    );
+    const viewMembers = this.resolveCapability(
+      access,
+      requesterIsSystemAdmin,
+      'viewMembers',
+    );
+    const editGroup = this.resolveCapability(access, requesterIsSystemAdmin, 'editGroup');
+
+    return {
+      canInviteMembers: invite.allowed,
+      inviteMembersBlockedReason: invite.blockedReason,
+      canCreateMatch: createMatch.allowed,
+      createMatchBlockedReason: createMatch.blockedReason,
+      canViewMembers: viewMembers.allowed,
+      viewMembersBlockedReason: viewMembers.blockedReason,
+      canEditGroup: editGroup.allowed,
+      editGroupBlockedReason: editGroup.blockedReason,
+    };
+  }
+
   async assertGroupMember(
     groupId: string,
     userId: string,
@@ -625,6 +865,7 @@ export class GroupsService {
       });
       throw this.createGroupAccessDeniedException(
         options.accessDeniedMessage ?? 'You must be a group member to perform this action.',
+        'NOT_GROUP_MEMBER',
       );
     }
 
@@ -652,8 +893,10 @@ export class GroupsService {
         deniedReason: 'GROUP_ACCESS_FORBIDDEN',
         returnedStatusCode: 403,
       });
+      const reason = !access.isMember ? 'NOT_GROUP_MEMBER' : 'NOT_GROUP_LEADER';
       throw this.createGroupAccessDeniedException(
         options.accessDeniedMessage ?? 'You must be a group admin to perform this action.',
+        reason,
       );
     }
 
@@ -702,17 +945,40 @@ export class GroupsService {
     name: string;
     region: string | null;
     description: string | null;
+    archivedAt?: Date | null;
     visibility: GroupVisibility;
     joinPolicy: GroupDetailResponseDto['joinPolicy'];
     tags: unknown;
     ownerUserId: string;
-    members?: Array<unknown>;
+    members?: Array<{
+      userId: string;
+      role?: GroupRole;
+    }>;
     matches?: Array<unknown>;
     _count?: {
       members: number;
       matches: number;
     };
-  }): GroupDetailResponseDto {
+  },
+  options: {
+    requesterUserId: string | null;
+    requesterIsSystemAdmin?: boolean;
+  } = {
+    requesterUserId: null,
+    requesterIsSystemAdmin: false,
+  },
+  ): GroupDetailResponseDto {
+    const access = this.toGroupAccessContext(group.id, options.requesterUserId, {
+      archivedAt: group.archivedAt ?? null,
+      visibility: group.visibility,
+      ownerUserId: group.ownerUserId,
+      members: group.members,
+    });
+    const capabilities = this.resolveGroupCapabilities(
+      access,
+      options.requesterIsSystemAdmin ?? false,
+    );
+
     return {
       id: group.id,
       groupId: group.id,
@@ -725,6 +991,7 @@ export class GroupsService {
       ownerUserId: group.ownerUserId,
       memberCount: group._count?.members ?? group.members?.length ?? 0,
       recentMatches: group._count?.matches ?? group.matches?.length ?? 0,
+      ...capabilities,
     };
   }
 
@@ -764,6 +1031,21 @@ export class GroupsService {
     return Array.isArray(value)
       ? value.filter((item): item is string => typeof item === 'string')
       : [];
+  }
+
+  private async getRequesterAdminFlag(
+    requesterUserId: string | null,
+  ): Promise<boolean> {
+    if (!requesterUserId) {
+      return false;
+    }
+
+    const requester = await this.prismaService.user.findUnique({
+      where: { id: requesterUserId },
+      select: { isAdmin: true },
+    });
+
+    return requester?.isAdmin ?? false;
   }
 
   private toGroupAccessContext(
@@ -809,6 +1091,71 @@ export class GroupsService {
       isLeader: requesterUserId !== null && group.ownerUserId === requesterUserId,
       memberRole: membership?.role ?? null,
     };
+  }
+
+  private resolveCapability(
+    access: GroupAccessContext,
+    requesterIsSystemAdmin: boolean,
+    capability:
+      | 'invite'
+      | 'createMatch'
+      | 'viewMembers'
+      | 'editGroup',
+  ): {
+    allowed: boolean;
+    blockedReason: GroupCapabilityBlockedReason | null;
+  } {
+    const blockedReason = this.resolveCapabilityBlockedReason(
+      access,
+      requesterIsSystemAdmin,
+      capability,
+    );
+    return {
+      allowed: blockedReason === null,
+      blockedReason,
+    };
+  }
+
+  private resolveCapabilityBlockedReason(
+    access: GroupAccessContext,
+    requesterIsSystemAdmin: boolean,
+    capability:
+      | 'invite'
+      | 'createMatch'
+      | 'viewMembers'
+      | 'editGroup',
+  ): GroupCapabilityBlockedReason | null {
+    if (!access.requesterUserId) {
+      return 'AUTH_REQUIRED';
+    }
+
+    if (!access.groupExists) {
+      return 'GROUP_NOT_FOUND';
+    }
+
+    if (access.groupArchivedAt) {
+      return 'GROUP_ARCHIVED';
+    }
+
+    if (capability === 'editGroup' && requesterIsSystemAdmin) {
+      return null;
+    }
+
+    if (!access.isMember) {
+      return 'NOT_GROUP_MEMBER';
+    }
+
+    if (capability === 'invite') {
+      return access.memberRole === GroupRole.OWNER || access.memberRole === GroupRole.ADMIN
+        ? null
+        : 'NOT_GROUP_LEADER';
+    }
+
+    if (capability === 'editGroup') {
+      return access.isLeader ? null : 'NOT_GROUP_LEADER';
+    }
+
+    return null;
   }
 
   private assertActiveGroupAccess(
@@ -864,7 +1211,7 @@ export class GroupsService {
 
   private createGroupAccessDeniedException(
     message: string,
-    reason: GroupDeniedReason = 'GROUP_ACCESS_FORBIDDEN',
+    reason: GroupCapabilityBlockedReason = 'NOT_GROUP_MEMBER',
   ): AppException {
     return new AppException(
       HttpStatus.FORBIDDEN,
@@ -919,6 +1266,24 @@ export interface GroupAccessAssertionOptions {
   unavailableMessage?: string;
   accessDeniedMessage?: string;
 }
+
+export interface GroupCapabilitySnapshot {
+  canInviteMembers: boolean;
+  inviteMembersBlockedReason: GroupCapabilityBlockedReason | null;
+  canCreateMatch: boolean;
+  createMatchBlockedReason: GroupCapabilityBlockedReason | null;
+  canViewMembers: boolean;
+  viewMembersBlockedReason: GroupCapabilityBlockedReason | null;
+  canEditGroup: boolean;
+  editGroupBlockedReason: GroupCapabilityBlockedReason | null;
+}
+
+export type GroupCapabilityBlockedReason =
+  | 'AUTH_REQUIRED'
+  | 'GROUP_NOT_FOUND'
+  | 'GROUP_ARCHIVED'
+  | 'NOT_GROUP_MEMBER'
+  | 'NOT_GROUP_LEADER';
 
 type GroupDeniedReason =
   | 'GROUP_NOT_FOUND'

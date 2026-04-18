@@ -5,6 +5,7 @@ import {
   IsEnum,
   IsEmpty,
   IsInt,
+  IsNotEmpty,
   IsOptional,
   IsString,
   Max,
@@ -12,7 +13,7 @@ import {
   Min,
   MinLength,
 } from 'class-validator';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 
 export class CreateGroupDto {
   @ApiProperty()
@@ -139,6 +140,83 @@ export class GroupMemberListResponseDto {
   items!: GroupMemberDto[];
 }
 
+class GroupMemberInviteCandidateRiotAccountDto {
+  @ApiProperty()
+  gameName!: string;
+
+  @ApiProperty()
+  tagLine!: string;
+
+  @ApiProperty()
+  region!: string;
+
+  @ApiPropertyOptional({ nullable: true })
+  profileIconId!: number | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  summonerLevel!: number | null;
+}
+
+class GroupMemberInviteCandidateDto {
+  @ApiProperty()
+  id!: string;
+
+  @ApiProperty()
+  userId!: string;
+
+  @ApiProperty()
+  nickname!: string;
+
+  @ApiPropertyOptional({ nullable: true })
+  profileImageUrl!: string | null;
+
+  @ApiPropertyOptional({
+    type: GroupMemberInviteCandidateRiotAccountDto,
+    nullable: true,
+  })
+  riotAccountSummary!: GroupMemberInviteCandidateRiotAccountDto | null;
+
+  @ApiPropertyOptional({ enum: Position, nullable: true, required: false })
+  representativePosition!: Position | null;
+
+  @ApiProperty({ nullable: true, required: false })
+  recentPower!: number | null;
+
+  @ApiProperty()
+  alreadyMember!: boolean;
+
+  @ApiPropertyOptional({ enum: GroupRole, nullable: true })
+  memberRole!: GroupRole | null;
+
+  @ApiProperty()
+  selectable!: boolean;
+
+  @ApiPropertyOptional({ nullable: true })
+  inviteBlockedReason!: string | null;
+}
+
+export class GroupMemberCandidateQueryDto {
+  @ApiProperty()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(24)
+  query!: string;
+
+  @ApiPropertyOptional({ default: 20, minimum: 1, maximum: 50 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(50)
+  limit?: number = 20;
+}
+
+export class GroupMemberCandidateListResponseDto {
+  @ApiProperty({ type: [GroupMemberInviteCandidateDto] })
+  items!: GroupMemberInviteCandidateDto[];
+}
+
 export class GroupDetailResponseDto {
   @ApiProperty()
   id!: string;
@@ -172,6 +250,30 @@ export class GroupDetailResponseDto {
 
   @ApiProperty()
   recentMatches!: number;
+
+  @ApiProperty()
+  canInviteMembers!: boolean;
+
+  @ApiPropertyOptional({ nullable: true })
+  inviteMembersBlockedReason!: string | null;
+
+  @ApiProperty()
+  canCreateMatch!: boolean;
+
+  @ApiPropertyOptional({ nullable: true })
+  createMatchBlockedReason!: string | null;
+
+  @ApiProperty()
+  canViewMembers!: boolean;
+
+  @ApiPropertyOptional({ nullable: true })
+  viewMembersBlockedReason!: string | null;
+
+  @ApiProperty()
+  canEditGroup!: boolean;
+
+  @ApiPropertyOptional({ nullable: true })
+  editGroupBlockedReason!: string | null;
 }
 
 export class PublicGroupsQueryDto {

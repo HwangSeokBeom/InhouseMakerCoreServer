@@ -290,6 +290,21 @@ export class RecruitingPostResponseDto extends RecruitingPostDto {
   @ApiProperty()
   canApply!: boolean;
 
+  @ApiPropertyOptional({ nullable: true })
+  applyBlockedReason!: string | null;
+
+  @ApiProperty()
+  canCreateMatch!: boolean;
+
+  @ApiPropertyOptional({ nullable: true })
+  createMatchBlockedReason!: string | null;
+
+  @ApiProperty()
+  canInviteMembers!: boolean;
+
+  @ApiPropertyOptional({ nullable: true })
+  inviteMembersBlockedReason!: string | null;
+
   @ApiPropertyOptional({ type: Object, nullable: true })
   myApplication!: RecruitingApplicationDto | null;
 }

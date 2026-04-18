@@ -44,6 +44,7 @@ describe('RecruitingService', () => {
   } as any;
   const groupsService = {
     assertGroupMember: jest.fn(),
+    getGroupCapabilities: jest.fn(),
   } as any;
   const notificationService = {
     createMany: jest.fn(),
@@ -76,6 +77,16 @@ describe('RecruitingService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    groupsService.getGroupCapabilities.mockResolvedValue({
+      canInviteMembers: false,
+      inviteMembersBlockedReason: 'NOT_GROUP_LEADER',
+      canCreateMatch: true,
+      createMatchBlockedReason: null,
+      canViewMembers: true,
+      viewMembersBlockedReason: null,
+      canEditGroup: false,
+      editGroupBlockedReason: 'NOT_GROUP_LEADER',
+    });
     service = new RecruitingService(
       prismaService,
       groupsService,
@@ -134,6 +145,12 @@ describe('RecruitingService', () => {
       id: created.id,
       createdBy: 'author1',
       groupId: 'group1',
+      canApply: false,
+      applyBlockedReason: 'OWN_POST',
+      canCreateMatch: true,
+      createMatchBlockedReason: null,
+      canInviteMembers: false,
+      inviteMembersBlockedReason: 'NOT_GROUP_LEADER',
     });
   });
 
@@ -672,7 +689,7 @@ describe('RecruitingService', () => {
         code: 'GROUP_ACCESS_FORBIDDEN',
         message: 'You must be a group member to access this post.',
         details: {
-          reason: 'GROUP_ACCESS_FORBIDDEN',
+          reason: 'NOT_GROUP_MEMBER',
           groupId: 'group1',
           postId: 'post1',
         },
@@ -781,7 +798,7 @@ describe('RecruitingService', () => {
       expect(getExceptionBody(error)).toMatchObject({
         code: 'GROUP_ACCESS_FORBIDDEN',
         details: {
-          reason: 'GROUP_ACCESS_FORBIDDEN',
+          reason: 'NOT_GROUP_MEMBER',
         },
       });
     }

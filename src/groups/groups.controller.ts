@@ -21,6 +21,8 @@ import {
   GroupDetailResponseDto,
   GroupLeaderboardQueryDto,
   GroupLeaderboardResponseDto,
+  GroupMemberCandidateListResponseDto,
+  GroupMemberCandidateQueryDto,
   GroupMemberListResponseDto,
   GroupRecentMatchesResponseDto,
   RecentGroupMatchesQueryDto,
@@ -92,6 +94,18 @@ export class GroupsController {
     @Body() dto: AddGroupMemberDto,
   ): Promise<GroupMemberListResponseDto> {
     return this.groupsService.addMember(user.userId, groupId, dto);
+  }
+
+  @Get(':groupId/member-candidates')
+  @ApiOperation({ summary: 'Search invite candidates for a group.' })
+  @ApiOkResponse({ type: GroupMemberCandidateListResponseDto })
+  @ApiForbiddenResponse({ description: 'Only group leaders/admins can search invite candidates.' })
+  searchMemberCandidates(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('groupId') groupId: string,
+    @Query() query: GroupMemberCandidateQueryDto,
+  ): Promise<GroupMemberCandidateListResponseDto> {
+    return this.groupsService.searchMemberCandidates(user.userId, groupId, query);
   }
 
   @Get(':groupId/members')

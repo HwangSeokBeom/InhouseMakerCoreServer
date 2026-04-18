@@ -260,7 +260,7 @@ export class RecruitingService {
           AppErrorCode.GROUP_ACCESS_FORBIDDEN,
           'You must be a group member to access this post.',
           {
-            reason: AppErrorCode.GROUP_ACCESS_FORBIDDEN,
+            reason: 'NOT_GROUP_MEMBER',
             groupId: post.groupId,
             postId,
           },
@@ -357,7 +357,7 @@ export class RecruitingService {
     });
 
     this.logPostMutation(mutationLog);
-    return this.toDetail(updated);
+    return this.toDetail(updated, requesterUserId);
   }
 
   async deletePost(
@@ -497,7 +497,7 @@ export class RecruitingService {
         AppErrorCode.FORBIDDEN,
         'You cannot apply to your own recruiting post.',
         {
-          reason: 'self_apply_not_allowed',
+          reason: 'OWN_POST',
           postId,
         },
       );
@@ -509,7 +509,7 @@ export class RecruitingService {
         AppErrorCode.RECRUITING_CLOSED,
         'This recruiting post is not open for applications.',
         {
-          reason: 'status_closed',
+          reason: 'RECRUITING_CLOSED',
           postId,
           status: post.status,
         },
@@ -526,6 +526,7 @@ export class RecruitingService {
         AppErrorCode.ALREADY_APPLIED,
         'You have already applied to this recruiting post.',
         {
+          reason: 'ALREADY_APPLIED',
           postId,
         },
       );
@@ -538,7 +539,7 @@ export class RecruitingService {
         AppErrorCode.RECRUITING_CLOSED,
         'This recruiting post is already full.',
         {
-          reason: 'capacity_reached',
+          reason: 'CAPACITY_REACHED',
           postId,
           capacity,
           applicantCount: post._count.applications,
@@ -565,6 +566,7 @@ export class RecruitingService {
           AppErrorCode.ALREADY_APPLIED,
           'You have already applied to this recruiting post.',
           {
+            reason: 'ALREADY_APPLIED',
             postId,
           },
         );
@@ -961,41 +963,48 @@ export class RecruitingService {
     return data;
   }
 
-  private toDetail(
+  private async toDetail(
     post: {
-    id: string;
-    groupId: string;
-    postType: RecruitingPostResponseDto['postType'];
-    title: string;
-    body: string | null;
-    tags: unknown;
-    requiredPositionsJson: unknown;
-    status: RecruitingPostResponseDto['status'];
-    scheduledAt: Date | null;
-    createdBy: string;
-    createdAt: Date;
-    updatedAt: Date;
-    _count?: {
-      applications: number;
-    };
-    applications?: Array<{
-      userId: string;
+      id: string;
+      groupId: string;
+      postType: RecruitingPostResponseDto['postType'];
+      title: string;
+      body: string | null;
+      tags: unknown;
+      requiredPositionsJson: unknown;
+      status: RecruitingPostResponseDto['status'];
+      scheduledAt: Date | null;
+      createdBy: string;
       createdAt: Date;
-      position: Position | null;
-      memo: string | null;
-    }>;
+      updatedAt: Date;
+      _count?: {
+        applications: number;
+      };
+      applications?: Array<{
+        userId: string;
+        createdAt: Date;
+        position: Position | null;
+        memo: string | null;
+      }>;
     },
     requesterUserId: string | null = null,
-  ): RecruitingPostResponseDto {
+  ): Promise<RecruitingPostResponseDto> {
     const capacity = this.resolveApplicantCapacity(post.requiredPositionsJson);
     const applicantCount = post._count?.applications ?? 0;
     const myApplication = post.applications?.[0] ?? null;
     const isApplied = Boolean(myApplication);
-    const canApply =
-      post.status === RecruitingPostStatus.OPEN &&
-      applicantCount < (capacity ?? Number.POSITIVE_INFINITY) &&
-      !isApplied &&
-      post.createdBy !== requesterUserId;
+    const applyCapability = this.resolveApplyCapability({
+      requesterUserId,
+      createdBy: post.createdBy,
+      status: post.status,
+      capacity,
+      applicantCount,
+      isApplied,
+    });
+    const groupCapabilities = await this.groupsService.getGroupCapabilities(
+      post.groupId,
+      requesterUserId,
+    );
 
     return {
       id: post.id,
@@ -1015,7 +1024,12 @@ export class RecruitingService {
       remainingSlots: capacity === null ? null : Math.max(0, capacity - applicantCount),
       applicantCount,
       isApplied,
-      canApply,
+      canApply: applyCapability.canApply,
+      applyBlockedReason: applyCapability.applyBlockedReason,
+      canCreateMatch: groupCapabilities.canCreateMatch,
+      createMatchBlockedReason: groupCapabilities.createMatchBlockedReason,
+      canInviteMembers: groupCapabilities.canInviteMembers,
+      inviteMembersBlockedReason: groupCapabilities.inviteMembersBlockedReason,
       myApplication: myApplication
         ? {
             userId: myApplication.userId,
@@ -1024,6 +1038,58 @@ export class RecruitingService {
             memo: myApplication.memo,
           }
         : null,
+    };
+  }
+
+  private resolveApplyCapability(input: {
+    requesterUserId: string | null;
+    createdBy: string;
+    status: RecruitingPostResponseDto['status'];
+    capacity: number | null;
+    applicantCount: number;
+    isApplied: boolean;
+  }): {
+    canApply: boolean;
+    applyBlockedReason: string | null;
+  } {
+    if (!input.requesterUserId) {
+      return {
+        canApply: false,
+        applyBlockedReason: 'AUTH_REQUIRED',
+      };
+    }
+
+    if (input.createdBy === input.requesterUserId) {
+      return {
+        canApply: false,
+        applyBlockedReason: 'OWN_POST',
+      };
+    }
+
+    if (input.isApplied) {
+      return {
+        canApply: false,
+        applyBlockedReason: 'ALREADY_APPLIED',
+      };
+    }
+
+    if (input.status !== RecruitingPostStatus.OPEN) {
+      return {
+        canApply: false,
+        applyBlockedReason: 'RECRUITING_CLOSED',
+      };
+    }
+
+    if (input.capacity !== null && input.applicantCount >= input.capacity) {
+      return {
+        canApply: false,
+        applyBlockedReason: 'CAPACITY_REACHED',
+      };
+    }
+
+    return {
+      canApply: true,
+      applyBlockedReason: null,
     };
   }
 
