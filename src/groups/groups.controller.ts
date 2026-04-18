@@ -1,10 +1,14 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import {
+  ApiBadRequestResponse,
   ApiBearerAuth,
   ApiCreatedResponse,
+  ApiForbiddenResponse,
+  ApiNotFoundResponse,
   ApiOkResponse,
   ApiOperation,
   ApiTags,
+  ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
 
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -13,12 +17,14 @@ import { AuthenticatedUser } from '../common/interfaces/authenticated-request.in
 import {
   AddGroupMemberDto,
   CreateGroupDto,
+  DeleteGroupResponseDto,
   GroupDetailResponseDto,
   GroupLeaderboardQueryDto,
   GroupLeaderboardResponseDto,
   GroupMemberListResponseDto,
   GroupRecentMatchesResponseDto,
   RecentGroupMatchesQueryDto,
+  UpdateGroupDto,
 } from './dto/groups.dto';
 import { GroupsService } from './groups.service';
 
@@ -47,6 +53,34 @@ export class GroupsController {
     @Param('groupId') groupId: string,
   ): Promise<GroupDetailResponseDto> {
     return this.groupsService.getGroup(user.userId, groupId);
+  }
+
+  @Patch(':groupId')
+  @ApiOperation({ summary: 'Update an inhouse group.' })
+  @ApiOkResponse({ type: GroupDetailResponseDto })
+  @ApiUnauthorizedResponse({ description: 'Authentication is required.' })
+  @ApiForbiddenResponse({ description: 'Only the group owner or admin can update this group.' })
+  @ApiNotFoundResponse({ description: 'Group was not found.' })
+  @ApiBadRequestResponse({ description: 'Payload is invalid.' })
+  updateGroup(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('groupId') groupId: string,
+    @Body() dto: UpdateGroupDto,
+  ): Promise<GroupDetailResponseDto> {
+    return this.groupsService.updateGroup(user.userId, groupId, dto);
+  }
+
+  @Delete(':groupId')
+  @ApiOperation({ summary: 'Archive an inhouse group.' })
+  @ApiOkResponse({ type: DeleteGroupResponseDto })
+  @ApiUnauthorizedResponse({ description: 'Authentication is required.' })
+  @ApiForbiddenResponse({ description: 'Only the group owner or admin can delete this group.' })
+  @ApiNotFoundResponse({ description: 'Group was not found.' })
+  deleteGroup(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('groupId') groupId: string,
+  ): Promise<DeleteGroupResponseDto> {
+    return this.groupsService.deleteGroup(user.userId, groupId);
   }
 
   @Post(':groupId/members')

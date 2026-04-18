@@ -66,6 +66,15 @@ describe('Stats calculations', () => {
 
   it('computes group leaderboard ordering by current power', async () => {
     const prismaService = {
+      inhouseGroup: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'group1',
+          archivedAt: null,
+          visibility: 'PRIVATE',
+          ownerUserId: 'owner1',
+          members: [{ userId: 'requester', role: 'MEMBER' }],
+        }),
+      },
       groupMember: {
         findUnique: jest.fn().mockResolvedValue({ userId: 'requester' }),
         findMany: jest.fn().mockResolvedValue([
@@ -87,7 +96,7 @@ describe('Stats calculations', () => {
       },
     } as any;
 
-    const service = new GroupsService(prismaService);
+    const service = new GroupsService(prismaService, { create: jest.fn() } as any);
     const result = await service.getLeaderboard('requester', 'group1', { limit: 10 });
 
     expect(result.items[0]).toEqual(

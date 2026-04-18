@@ -3,6 +3,7 @@ import { GroupRole, GroupVisibility, JoinPolicy, MatchStatus, Position, ResultSt
 import {
   IsArray,
   IsEnum,
+  IsEmpty,
   IsInt,
   IsOptional,
   IsString,
@@ -19,6 +20,12 @@ export class CreateGroupDto {
   @MinLength(2)
   @MaxLength(50)
   name!: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(30)
+  region?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
@@ -43,6 +50,50 @@ export class CreateGroupDto {
   tags?: string[];
 }
 
+export class UpdateGroupDto {
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MinLength(2)
+  @MaxLength(50)
+  name?: string;
+
+  @ApiPropertyOptional({ nullable: true })
+  @IsOptional()
+  @IsString()
+  @MaxLength(30)
+  region?: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  description?: string | null;
+
+  @ApiPropertyOptional({ enum: GroupVisibility })
+  @IsOptional()
+  @IsEnum(GroupVisibility)
+  visibility?: GroupVisibility;
+
+  @ApiPropertyOptional({ enum: JoinPolicy })
+  @IsOptional()
+  @IsEnum(JoinPolicy)
+  joinPolicy?: JoinPolicy;
+
+  @ApiPropertyOptional({ type: [String] })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  tags?: string[];
+
+  @ApiPropertyOptional({
+    description: 'ownerUserId cannot be changed via the group update endpoint.',
+  })
+  @IsOptional()
+  @IsEmpty({ message: 'ownerUserId cannot be changed.' })
+  ownerUserId?: string;
+}
+
 export class AddGroupMemberDto {
   @ApiProperty()
   @IsString()
@@ -64,6 +115,21 @@ class GroupMemberDto {
   @ApiProperty()
   nickname!: string;
 
+  @ApiPropertyOptional({ enum: Position, nullable: true, required: false })
+  primaryPosition!: Position | null;
+
+  @ApiPropertyOptional({ enum: Position, nullable: true, required: false })
+  mainPosition!: Position | null;
+
+  @ApiPropertyOptional({ enum: Position, nullable: true, required: false })
+  secondaryPosition!: Position | null;
+
+  @ApiProperty({ nullable: true, required: false })
+  recentPower!: number | null;
+
+  @ApiProperty()
+  profileVisible!: boolean;
+
   @ApiProperty({ enum: GroupRole })
   role!: GroupRole;
 }
@@ -78,7 +144,13 @@ export class GroupDetailResponseDto {
   id!: string;
 
   @ApiProperty()
+  groupId!: string;
+
+  @ApiProperty()
   name!: string;
+
+  @ApiPropertyOptional()
+  region!: string | null;
 
   @ApiPropertyOptional()
   description!: string | null;
@@ -170,7 +242,19 @@ export class RecentGroupMatchesQueryDto {
 
 class GroupRecentMatchItemDto {
   @ApiProperty()
+  id!: string;
+
+  @ApiProperty()
   matchId!: string;
+
+  @ApiProperty()
+  canonicalMatchId!: string;
+
+  @ApiProperty()
+  groupId!: string;
+
+  @ApiPropertyOptional()
+  groupName!: string | null;
 
   @ApiPropertyOptional()
   title!: string | null;
@@ -189,9 +273,20 @@ class GroupRecentMatchItemDto {
 
   @ApiProperty()
   playerCount!: number;
+
+  @ApiProperty()
+  updatedAt!: string;
 }
 
 export class GroupRecentMatchesResponseDto {
   @ApiProperty({ type: [GroupRecentMatchItemDto] })
   items!: GroupRecentMatchItemDto[];
+}
+
+export class DeleteGroupResponseDto {
+  @ApiProperty()
+  id!: string;
+
+  @ApiProperty()
+  archivedAt!: string;
 }

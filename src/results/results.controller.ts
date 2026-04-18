@@ -37,6 +37,28 @@ import { ResultsService } from './results.service';
 export class ResultsController {
   constructor(private readonly resultsService: ResultsService) {}
 
+  @Post()
+  @ApiOperation({ summary: 'Submit or update a match result payload.' })
+  @ApiHeader({
+    name: 'idempotency-key',
+    required: false,
+    description: 'Optional idempotency key for retry-safe result submissions.',
+  })
+  @ApiCreatedResponse({ type: ResultSubmissionResponseDto })
+  submitResult(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('matchId') matchId: string,
+    @Body() dto: QuickResultDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ): Promise<ResultSubmissionResponseDto> {
+    return this.resultsService.submitQuickResult(
+      user.userId,
+      matchId,
+      dto,
+      idempotencyKey,
+    );
+  }
+
   @Post('quick')
   @ApiOperation({ summary: 'Submit a quick result for a match.' })
   @ApiHeader({

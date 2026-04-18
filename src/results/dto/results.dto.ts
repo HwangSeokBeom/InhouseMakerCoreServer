@@ -3,6 +3,7 @@ import {
   ConfirmationAction,
   InputMode,
   LaneResult,
+  Position,
   ResultStatus,
   TeamSide,
 } from '@prisma/client';
@@ -64,11 +65,19 @@ export class QuickResultDto {
   @IsString()
   mvpUserId!: string;
 
-  @ApiProperty()
+  @ApiPropertyOptional()
+  @IsOptional()
   @IsInt()
   @Min(1)
   @Max(5)
-  balanceRating!: number;
+  balanceRating?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(5)
+  balanceFeeling?: number;
 
   @ApiProperty({ type: [QuickResultPlayerDto] })
   @IsArray()
@@ -92,11 +101,19 @@ export class QuickResultPreviewDto {
   @IsString()
   mvpUserId!: string;
 
-  @ApiProperty()
+  @ApiPropertyOptional()
+  @IsOptional()
   @IsInt()
   @Min(1)
   @Max(5)
-  balanceRating!: number;
+  balanceRating?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(5)
+  balanceFeeling?: number;
 
   @ApiProperty({ type: [QuickResultPreviewPlayerDto] })
   @IsArray()
@@ -188,11 +205,35 @@ export class ResultSubmissionResponseDto {
   @ApiProperty()
   resultId!: string;
 
+  @ApiProperty()
+  matchId!: string;
+
   @ApiProperty({ enum: ResultStatus })
   status!: ResultStatus;
 
   @ApiProperty()
   confirmationNeeded!: number;
+
+  @ApiProperty()
+  updatedBy!: string;
+
+  @ApiProperty()
+  savedAt!: string;
+
+  @ApiProperty({ enum: TeamSide, nullable: true, required: false })
+  winningTeam!: TeamSide | null;
+
+  @ApiPropertyOptional()
+  mvpUserId!: string | null;
+
+  @ApiPropertyOptional()
+  balanceRating!: number | null;
+
+  @ApiPropertyOptional()
+  balanceFeeling!: number | null;
+
+  @ApiProperty()
+  isFinalized!: boolean;
 }
 
 class ResultConfirmationDto {
@@ -219,6 +260,12 @@ class ResultStatDto {
   @ApiProperty()
   userId!: string;
 
+  @ApiProperty({ enum: TeamSide })
+  teamSide!: TeamSide;
+
+  @ApiProperty({ enum: Position })
+  role!: Position;
+
   @ApiProperty()
   kills!: number;
 
@@ -230,11 +277,17 @@ class ResultStatDto {
 
   @ApiProperty({ enum: LaneResult })
   laneResult!: LaneResult;
+
+  @ApiPropertyOptional({ nullable: true })
+  contributionRating!: number | null;
 }
 
 export class MatchResultResponseDto {
   @ApiProperty()
   id!: string;
+
+  @ApiProperty()
+  matchId!: string;
 
   @ApiProperty({ enum: TeamSide, nullable: true, required: false })
   winningTeam!: TeamSide | null;
@@ -244,6 +297,18 @@ export class MatchResultResponseDto {
 
   @ApiProperty({ enum: InputMode })
   inputMode!: InputMode;
+
+  @ApiProperty()
+  submittedBy!: string;
+
+  @ApiProperty()
+  updatedAt!: string;
+
+  @ApiPropertyOptional()
+  balanceRating!: number | null;
+
+  @ApiPropertyOptional()
+  balanceFeeling!: number | null;
 
   @ApiProperty()
   version!: number;
@@ -282,12 +347,6 @@ class ResultDisputeSummaryDto {
 }
 
 export class ResultDisputeResponseDto extends MatchResultResponseDto {
-  @ApiProperty()
-  matchId!: string;
-
-  @ApiProperty()
-  submittedBy!: string;
-
   @ApiProperty({ type: ResultDisputeSummaryDto })
   disputeSummary!: ResultDisputeSummaryDto;
 }

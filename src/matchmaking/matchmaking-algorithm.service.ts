@@ -42,6 +42,7 @@ interface RepeatTeamPenaltyBreakdown {
 
 export interface MatchmakingCandidate {
   candidateId: string;
+  combinationKey: string;
   candidateNo: number;
   type: BalanceMode;
   score: number;
@@ -101,6 +102,10 @@ export class MatchmakingAlgorithmService {
     players: AlgorithmPlayer[],
     excludedCandidateIds: string[] = [],
     historyContext?: MatchHistoryContext,
+    options: {
+      excludedCombinationKeys?: string[];
+      tiebreakSeed?: string | null;
+    } = {},
   ): MatchmakingCandidate[] {
     if (players.length !== 10) {
       return [];
@@ -160,14 +165,18 @@ export class MatchmakingAlgorithmService {
       BalanceMode.SKILL_FIRST,
     ];
 
+    const usedCombinationKeys = new Set(options.excludedCombinationKeys ?? []);
+
     return uniqueModes
       .map((mode, index) => {
         const ranked = splitCandidates
           .map((candidate) => {
             const score = this.scoreCandidate(candidate.metrics, mode);
-            const candidateId = this.buildCandidateId(candidate.teamAAssignments, mode);
+            const combinationKey = this.buildCombinationKey(candidate.teamAAssignments);
+            const candidateId = this.buildCandidateId(combinationKey, mode);
             return {
               candidateId,
+              combinationKey,
               candidateNo: index + 1,
               type: mode,
               score,
@@ -186,9 +195,20 @@ export class MatchmakingAlgorithmService {
             };
           })
           .filter((candidate) => !excludedCandidateIds.includes(candidate.candidateId))
-          .sort((a, b) => a.score - b.score);
+          .sort((a, b) =>
+            this.compareCandidates(a, b, mode, options.tiebreakSeed ?? null),
+          );
 
-        return ranked[0];
+        const uniqueCandidate = ranked.find(
+          (candidate) => !usedCombinationKeys.has(candidate.combinationKey),
+        );
+        const selected = uniqueCandidate ?? ranked[0];
+
+        if (selected) {
+          usedCombinationKeys.add(selected.combinationKey);
+        }
+
+        return selected;
       })
       .filter((candidate): candidate is MatchmakingCandidate => Boolean(candidate));
   }
@@ -513,11 +533,41 @@ export class MatchmakingAlgorithmService {
     return team.reduce((sum, player) => sum + player.rolePower, 0);
   }
 
-  private buildCandidateId(
-    teamA: MatchmakingCandidate['teamA'],
+  private buildCombinationKey(teamA: MatchmakingCandidate['teamA']): string {
+    return teamA.map((player) => `${player.userId}-${player.assignedRole}`).join('|');
+  }
+
+  private buildCandidateId(combinationKey: string, mode: BalanceMode): string {
+    return `${mode}:${combinationKey}`;
+  }
+
+  private compareCandidates(
+    left: Pick<MatchmakingCandidate, 'score' | 'combinationKey'>,
+    right: Pick<MatchmakingCandidate, 'score' | 'combinationKey'>,
     mode: BalanceMode,
-  ): string {
-    return `${mode}:${teamA.map((player) => `${player.userId}-${player.assignedRole}`).join('|')}`;
+    tiebreakSeed: string | null,
+  ): number {
+    if (left.score !== right.score) {
+      return left.score - right.score;
+    }
+
+    return this.computeTiebreakValue(left.combinationKey, mode, tiebreakSeed) -
+      this.computeTiebreakValue(right.combinationKey, mode, tiebreakSeed);
+  }
+
+  private computeTiebreakValue(
+    combinationKey: string,
+    mode: BalanceMode,
+    tiebreakSeed: string | null,
+  ): number {
+    const seed = `${mode}:${tiebreakSeed ?? 'default'}:${combinationKey}`;
+    let hash = 0;
+
+    for (let index = 0; index < seed.length; index += 1) {
+      hash = (hash * 31 + seed.charCodeAt(index)) % 1000003;
+    }
+
+    return hash;
   }
 
   private buildExplanationTags(

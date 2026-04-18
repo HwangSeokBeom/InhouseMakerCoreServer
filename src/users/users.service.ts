@@ -1,16 +1,14 @@
-import {
-  ForbiddenException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { HttpStatus, Injectable } from '@nestjs/common';
 import { MatchStatus, ResultStatus } from '@prisma/client';
 
+import { AppErrorCode, AppException } from '../common/app.exception';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-request.interface';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   InhouseHistoryQueryDto,
   InhouseHistoryResponseDto,
   MeResponseDto,
+  UserProfileResponseDto,
   UserStatsQueryDto,
   UserStatsResponseDto,
   UpdateMyProfileDto,
@@ -26,7 +24,14 @@ export class UsersService {
     });
 
     if (!user) {
-      throw new NotFoundException('User not found.');
+      throw new AppException(
+        HttpStatus.NOT_FOUND,
+        AppErrorCode.USER_NOT_FOUND,
+        'User not found.',
+        {
+          userId,
+        },
+      );
     }
 
     return {
@@ -63,6 +68,50 @@ export class UsersService {
     return this.getMe(userId);
   }
 
+  async getUserProfile(
+    requesterUserId: string,
+    targetUserId: string,
+  ): Promise<UserProfileResponseDto> {
+    await this.assertCanAccessUserScopedResource(requesterUserId, targetUserId);
+
+    const user = await this.prismaService.user.findUnique({
+      where: { id: targetUserId },
+      include: {
+        powerProfile: {
+          select: {
+            overallPower: true,
+          },
+        },
+      },
+    });
+
+    if (!user) {
+      throw new AppException(
+        HttpStatus.NOT_FOUND,
+        AppErrorCode.USER_NOT_FOUND,
+        'User not found.',
+        {
+          userId: targetUserId,
+        },
+      );
+    }
+
+    return {
+      id: user.id,
+      userId: user.id,
+      nickname: user.nickname,
+      primaryPosition: user.primaryPosition,
+      mainPosition: user.primaryPosition,
+      secondaryPosition: user.secondaryPosition,
+      isFillAvailable: user.isFillAvailable,
+      recentPower: user.powerProfile?.overallPower ?? null,
+      profileVisible: true,
+      styleTags: this.parseStringArray(user.styleTags),
+      mannerScore: user.mannerScore,
+      noshowCount: user.noshowCount,
+    };
+  }
+
   async getInhouseHistory(
     currentUser: AuthenticatedUser,
     targetUserId: string,
@@ -92,6 +141,12 @@ export class UsersService {
         match: {
           include: {
             result: true,
+            group: {
+              select: {
+                id: true,
+                name: true,
+              },
+            },
           },
         },
       },
@@ -108,13 +163,21 @@ export class UsersService {
               : 0;
 
         return {
+          id: stat.matchId,
           matchId: stat.matchId,
+          canonicalMatchId: stat.matchId,
+          groupId: stat.match.groupId,
+          groupName: stat.match.group?.name ?? null,
+          title: stat.match.title ?? null,
+          status: stat.match.status,
           scheduledAt: stat.match.scheduledAt?.toISOString() ?? stat.createdAt.toISOString(),
           role: stat.role,
           teamSide: stat.teamSide,
           result: didWin ? 'WIN' : 'LOSE',
           kda: `${stat.kills}/${stat.deaths}/${stat.assists}`,
           deltaMmr: didWin ? 18 * confidenceMultiplier : -18 * confidenceMultiplier,
+          winningTeam: stat.match.result?.winningTeam ?? null,
+          resultStatus: stat.match.result?.resultStatus ?? null,
         };
       }),
     };
@@ -232,8 +295,15 @@ export class UsersService {
         });
 
     if ((groupId && sharedGroupCount < 2) || (!groupId && sharedGroupCount < 1)) {
-      throw new ForbiddenException(
-        'You can only access another user if you share the same inhouse group.',
+      throw new AppException(
+        HttpStatus.FORBIDDEN,
+        AppErrorCode.GROUP_ACCESS_FORBIDDEN,
+        'You are not allowed to access this user without a shared inhouse group.',
+        {
+          requesterUserId,
+          targetUserId,
+          groupId: groupId ?? null,
+        },
       );
     }
   }
@@ -245,7 +315,14 @@ export class UsersService {
     });
 
     if (!user) {
-      throw new NotFoundException('User not found.');
+      throw new AppException(
+        HttpStatus.NOT_FOUND,
+        AppErrorCode.USER_NOT_FOUND,
+        'User not found.',
+        {
+          userId,
+        },
+      );
     }
   }
 

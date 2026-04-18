@@ -303,10 +303,12 @@ model InhouseGroup {
   id          String          @id @default(cuid())
   ownerUserId String          @map("owner_user_id")
   name        String
+  region      String?
   description String?
   visibility  GroupVisibility @default(PRIVATE)
   joinPolicy  JoinPolicy      @default(INVITE_ONLY) @map("join_policy")
   tags        Json?
+  archivedAt  DateTime?       @map("archived_at")
   createdAt   DateTime        @default(now()) @map("created_at")
   updatedAt   DateTime        @updatedAt @map("updated_at")
 
@@ -453,6 +455,7 @@ model RecruitingPost {
   scheduledAt           DateTime?            @map("scheduled_at")
   requiredPositionsJson Json?                @map("required_positions_json")
   status                RecruitingPostStatus @default(OPEN)
+  deletedAt             DateTime?            @map("deleted_at")
   createdAt             DateTime             @default(now()) @map("created_at")
   updatedAt             DateTime             @updatedAt @map("updated_at")
 
@@ -468,6 +471,8 @@ model RecruitingPostApplication {
   id        String   @id @default(cuid())
   postId    String   @map("post_id")
   userId    String   @map("user_id")
+  position  Position?
+  memo      String?
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 

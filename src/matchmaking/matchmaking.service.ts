@@ -35,7 +35,10 @@ export class MatchmakingService {
     dto: AutoBalanceDto,
   ): Promise<MatchmakingCandidatesResponseDto> {
     await this.matchesService.assertMatchHostOrCaptain(matchId, requesterUserId);
-    return this.generateAndPersistCandidates(matchId, dto.lockedPlayerIds ?? [], []);
+    return this.generateAndPersistCandidates(matchId, dto.lockedPlayerIds ?? [], [], {
+      excludedCombinationKeys: dto.excludePreviousCombinationKeys ?? [],
+      tiebreakSeed: null,
+    });
   }
 
   async reroll(
@@ -44,10 +47,34 @@ export class MatchmakingService {
     dto: RerollDto,
   ): Promise<MatchmakingCandidatesResponseDto> {
     await this.matchesService.assertMatchHostOrCaptain(matchId, requesterUserId);
+    const match = await this.matchesService.getMatchWithPlayers(matchId);
+    const previousCandidates = Array.isArray(match.candidatesJson)
+      ? (match.candidatesJson as Array<Record<string, unknown>>)
+      : [];
+    const autoExcludedCandidateIds = previousCandidates
+      .map((candidate) => candidate.candidateId)
+      .filter((candidateId): candidateId is string => typeof candidateId === 'string');
+    const autoExcludedCombinationKeys =
+      dto.excludePreviousCombination === false
+        ? []
+        : previousCandidates
+            .map((candidate) => candidate.combinationKey)
+            .filter(
+              (combinationKey): combinationKey is string =>
+                typeof combinationKey === 'string',
+            );
+
     return this.generateAndPersistCandidates(
       matchId,
       dto.lockedPlayerIds ?? [],
-      dto.excludeCandidateIds ?? [],
+      [...autoExcludedCandidateIds, ...(dto.excludeCandidateIds ?? [])],
+      {
+        excludedCombinationKeys: [
+          ...autoExcludedCombinationKeys,
+          ...(dto.excludePreviousCombinationKeys ?? []),
+        ],
+        tiebreakSeed: dto.regenerateNonce ?? null,
+      },
     );
   }
 
@@ -83,6 +110,10 @@ export class MatchmakingService {
         matchesAnalyzed: 0,
         sameTeamPairHistory: {},
       },
+      {
+        excludedCombinationKeys: dto.excludePreviousCombinationKeys ?? [],
+        tiebreakSeed: null,
+      },
     );
 
     if (candidates.length === 0) {
@@ -98,6 +129,10 @@ export class MatchmakingService {
     matchId: string,
     lockedPlayerIds: string[],
     excludedCandidateIds: string[],
+    options: {
+      excludedCombinationKeys: string[];
+      tiebreakSeed: string | null;
+    },
   ): Promise<MatchmakingCandidatesResponseDto> {
     const match = await this.matchesService.getMatchWithPlayers(matchId);
 
@@ -131,6 +166,7 @@ export class MatchmakingService {
       players,
       excludedCandidateIds,
       historyContext,
+      options,
     );
 
     if (candidates.length === 0) {

@@ -1,8 +1,6 @@
 import {
-  BadRequestException,
-  ForbiddenException,
+  HttpStatus,
   Injectable,
-  NotFoundException,
 } from '@nestjs/common';
 import {
   ConfirmationAction,
@@ -12,11 +10,13 @@ import {
   MatchStatus,
   NotificationType,
   ParticipationStatus,
+  Position,
   ResultStatus,
   TeamSide,
 } from '@prisma/client';
 
 import { AuditLogService } from '../common/audit-log.service';
+import { AppErrorCode, AppException } from '../common/app.exception';
 import { toPrismaJson } from '../common/prisma-json.util';
 import { MatchesService } from '../matches/matches.service';
 import { NotificationService } from '../notifications/notification.service';
@@ -47,24 +47,42 @@ export class ResultsService {
   ) {}
 
   previewQuickResult(dto: QuickResultPreviewDto): QuickResultPreviewResponseDto {
+    const balanceFeeling = this.resolveBalanceFeeling(dto);
+
     if (dto.players.length !== 10) {
-      throw new BadRequestException('Result preview requires exactly 10 players.');
+      throw new AppException(
+        HttpStatus.BAD_REQUEST,
+        AppErrorCode.INVALID_REQUEST,
+        'Result preview requires exactly 10 players.',
+      );
     }
 
     const uniqueUserIds = new Set(dto.players.map((player) => player.userId));
     if (uniqueUserIds.size !== dto.players.length) {
-      throw new BadRequestException('Result preview players must be unique.');
+      throw new AppException(
+        HttpStatus.BAD_REQUEST,
+        AppErrorCode.INVALID_REQUEST,
+        'Result preview players must be unique.',
+      );
     }
 
     if (!dto.players.some((player) => player.userId === dto.mvpUserId)) {
-      throw new BadRequestException('MVP user must be one of the preview players.');
+      throw new AppException(
+        HttpStatus.BAD_REQUEST,
+        AppErrorCode.INVALID_REQUEST,
+        'MVP user must be one of the preview players.',
+      );
     }
 
     const teamSummaries = [TeamSide.A, TeamSide.B].map((teamSide) => {
       const players = dto.players.filter((player) => player.teamSide === teamSide);
 
       if (players.length !== 5) {
-        throw new BadRequestException('Result preview requires exactly 5 players on each team.');
+        throw new AppException(
+          HttpStatus.BAD_REQUEST,
+          AppErrorCode.INVALID_REQUEST,
+          'Result preview requires exactly 5 players on each team.',
+        );
       }
 
       return {
@@ -81,7 +99,7 @@ export class ResultsService {
       playerCount: dto.players.length,
       mvpUserId: dto.mvpUserId,
       winningTeam: dto.winningTeam,
-      balanceRating: dto.balanceRating,
+      balanceRating: balanceFeeling,
       teams: teamSummaries,
     };
   }
@@ -92,11 +110,25 @@ export class ResultsService {
     dto: QuickResultDto,
     idempotencyKey?: string,
   ): Promise<ResultSubmissionResponseDto> {
-    await this.matchesService.assertMatchHostOrCaptain(matchId, requesterUserId);
+    await this.matchesService.assertMatchHostOrCaptain(matchId, requesterUserId, {
+      forbiddenCode: AppErrorCode.RESULT_SAVE_FORBIDDEN,
+      forbiddenMessage:
+        'Only the host, captain, or group admin can save a match result.',
+    });
     const match = await this.matchesService.getMatchWithPlayers(matchId);
+    const balanceFeeling = this.resolveBalanceFeeling(dto);
 
     if (dto.players.length !== match.players.length) {
-      throw new BadRequestException('Result input must include all current match players.');
+      throw new AppException(
+        HttpStatus.BAD_REQUEST,
+        AppErrorCode.INVALID_REQUEST,
+        'Result input must include all current match players.',
+        {
+          matchId,
+          inputPlayerCount: dto.players.length,
+          expectedPlayerCount: match.players.length,
+        },
+      );
     }
 
     const existingResult = await this.prismaService.inhouseMatchResult.findUnique({
@@ -104,13 +136,26 @@ export class ResultsService {
     });
 
     if (existingResult?.idempotencyKey && existingResult.idempotencyKey === idempotencyKey) {
-      return this.buildSubmissionResponse(existingResult.id, existingResult.resultStatus, match.players.length);
+      return this.buildSubmissionResponse(existingResult, match.players.length);
+    }
+
+    if (existingResult?.resultStatus === ResultStatus.CONFIRMED) {
+      throw new AppException(
+        HttpStatus.CONFLICT,
+        AppErrorCode.RESULT_ALREADY_FINALIZED,
+        'This result has already been finalized and cannot be overwritten.',
+        {
+          matchId,
+          resultId: existingResult.id,
+        },
+      );
     }
 
     const payloadJson = {
       winningTeam: dto.winningTeam,
       mvpUserId: dto.mvpUserId,
-      balanceRating: dto.balanceRating,
+      balanceRating: balanceFeeling,
+      balanceFeeling,
       players: dto.players,
     };
 
@@ -121,7 +166,7 @@ export class ResultsService {
             data: {
               winningTeam: dto.winningTeam,
               mvpUserId: dto.mvpUserId,
-              balanceRating: dto.balanceRating,
+              balanceRating: balanceFeeling,
               inputMode: InputMode.QUICK,
               submittedBy: requesterUserId,
               resultStatus: ResultStatus.PARTIAL,
@@ -135,7 +180,7 @@ export class ResultsService {
               matchId,
               winningTeam: dto.winningTeam,
               mvpUserId: dto.mvpUserId,
-              balanceRating: dto.balanceRating,
+              balanceRating: balanceFeeling,
               inputMode: InputMode.QUICK,
               submittedBy: requesterUserId,
               resultStatus: ResultStatus.PARTIAL,
@@ -148,8 +193,14 @@ export class ResultsService {
         const matchPlayer = match.players.find((item) => item.userId === player.userId);
 
         if (!matchPlayer?.teamSide || !matchPlayer.assignedRole) {
-          throw new BadRequestException(
-            `Player ${player.userId} must have an assigned team and role before submitting results.`,
+          throw new AppException(
+            HttpStatus.BAD_REQUEST,
+            AppErrorCode.INVALID_REQUEST,
+            'Every result player must have an assigned team and role before saving.',
+            {
+              matchId,
+              userId: player.userId,
+            },
           );
         }
 
@@ -224,7 +275,7 @@ export class ResultsService {
       ),
     );
 
-    return this.buildSubmissionResponse(result.id, ResultStatus.PARTIAL, match.players.length);
+    return this.buildSubmissionResponse(result, match.players.length);
   }
 
   async confirmResult(
@@ -237,7 +288,15 @@ export class ResultsService {
     const isParticipant = match.players.some((player) => player.userId === requesterUserId);
 
     if (!isParticipant) {
-      throw new ForbiddenException('Only match participants can confirm or dispute results.');
+      throw new AppException(
+        HttpStatus.FORBIDDEN,
+        AppErrorCode.RESULT_CONFIRM_FORBIDDEN,
+        'Only match participants can confirm or dispute results.',
+        {
+          matchId,
+          resultId,
+        },
+      );
     }
 
     const result = await this.prismaService.inhouseMatchResult.findFirst({
@@ -248,7 +307,15 @@ export class ResultsService {
     });
 
     if (!result) {
-      throw new NotFoundException('Match result not found.');
+      throw new AppException(
+        HttpStatus.NOT_FOUND,
+        AppErrorCode.RESULT_NOT_FOUND,
+        'Match result not found.',
+        {
+          matchId,
+          resultId,
+        },
+      );
     }
 
     await this.prismaService.matchResultConfirmation.create({
@@ -275,7 +342,15 @@ export class ResultsService {
 
     const nextStatus = await this.finalizeResultStatus(result.id, true);
 
-    return this.buildSubmissionResponse(result.id, nextStatus, match.players.length);
+    return this.buildSubmissionResponse(
+      {
+        ...result,
+        resultStatus: nextStatus,
+        updatedAt: new Date(),
+        submittedBy: result.submittedBy,
+      },
+      match.players.length,
+    );
   }
 
   async getMatchResult(
@@ -294,7 +369,14 @@ export class ResultsService {
     });
 
     if (!isParticipant && !isGroupMember) {
-      throw new ForbiddenException('Only participants or group members can view match results.');
+      throw new AppException(
+        HttpStatus.FORBIDDEN,
+        AppErrorCode.RESULT_VIEW_FORBIDDEN,
+        'Only participants or group members can view match results.',
+        {
+          matchId,
+        },
+      );
     }
 
     const result = await this.prismaService.inhouseMatchResult.findUnique({
@@ -307,7 +389,14 @@ export class ResultsService {
     });
 
     if (!result) {
-      throw new NotFoundException('Match result not found.');
+      throw new AppException(
+        HttpStatus.NOT_FOUND,
+        AppErrorCode.RESULT_NOT_FOUND,
+        'Match result not found.',
+        {
+          matchId,
+        },
+      );
     }
 
     const stats = await this.prismaService.inhousePlayerStat.findMany({
@@ -339,11 +428,28 @@ export class ResultsService {
     });
 
     if (!result) {
-      throw new NotFoundException('Match result not found.');
+      throw new AppException(
+        HttpStatus.NOT_FOUND,
+        AppErrorCode.RESULT_NOT_FOUND,
+        'Match result not found.',
+        {
+          matchId,
+          resultId,
+        },
+      );
     }
 
     if (result.resultStatus !== ResultStatus.DISPUTED) {
-      throw new BadRequestException('Only disputed results can be reviewed in dispute detail.');
+      throw new AppException(
+        HttpStatus.BAD_REQUEST,
+        AppErrorCode.RESULT_INVALID_STATE,
+        'Only disputed results can be reviewed in dispute detail.',
+        {
+          matchId,
+          resultId,
+          resultStatus: result.resultStatus,
+        },
+      );
     }
 
     const stats = await this.prismaService.inhousePlayerStat.findMany({
@@ -360,8 +466,6 @@ export class ResultsService {
     );
 
     return {
-      matchId,
-      submittedBy: result.submittedBy,
       ...this.buildMatchResultResponse(result, stats),
       disputeSummary: this.buildDisputeSummary(
         result.winningTeam,
@@ -379,9 +483,19 @@ export class ResultsService {
   ): Promise<AdminResolveResultResponseDto> {
     const match = await this.matchesService.getMatchWithPlayers(matchId);
     await this.assertResultResolutionAuthority(requesterUserId, match.groupId);
+    const balanceFeeling = this.resolveOptionalBalanceFeeling(dto);
 
     if (dto.mvpUserId && !match.players.some((player) => player.userId === dto.mvpUserId)) {
-      throw new BadRequestException('MVP user must be one of the current match players.');
+      throw new AppException(
+        HttpStatus.BAD_REQUEST,
+        AppErrorCode.INVALID_REQUEST,
+        'MVP user must be one of the current match players.',
+        {
+          matchId,
+          resultId,
+          mvpUserId: dto.mvpUserId,
+        },
+      );
     }
 
     const result = await this.prismaService.inhouseMatchResult.findFirst({
@@ -392,11 +506,28 @@ export class ResultsService {
     });
 
     if (!result) {
-      throw new NotFoundException('Match result not found.');
+      throw new AppException(
+        HttpStatus.NOT_FOUND,
+        AppErrorCode.RESULT_NOT_FOUND,
+        'Match result not found.',
+        {
+          matchId,
+          resultId,
+        },
+      );
     }
 
     if (result.resultStatus !== ResultStatus.DISPUTED) {
-      throw new BadRequestException('Only disputed results can be admin resolved.');
+      throw new AppException(
+        HttpStatus.BAD_REQUEST,
+        AppErrorCode.RESULT_INVALID_STATE,
+        'Only disputed results can be admin resolved.',
+        {
+          matchId,
+          resultId,
+          resultStatus: result.resultStatus,
+        },
+      );
     }
 
     const before = {
@@ -410,13 +541,14 @@ export class ResultsService {
     const factualChange =
       result.winningTeam !== dto.winningTeam ||
       (dto.mvpUserId !== undefined && dto.mvpUserId !== result.mvpUserId) ||
-      (dto.balanceRating !== undefined && dto.balanceRating !== result.balanceRating);
+      (balanceFeeling !== null && balanceFeeling !== result.balanceRating);
     const resolvedAt = new Date();
     const nextPayload = {
       ...((result.payloadJson as Record<string, unknown> | null) ?? {}),
       winningTeam: dto.winningTeam,
       mvpUserId: dto.mvpUserId ?? result.mvpUserId,
-      balanceRating: dto.balanceRating ?? result.balanceRating,
+      balanceRating: balanceFeeling ?? result.balanceRating,
+      balanceFeeling: balanceFeeling ?? result.balanceRating,
     };
 
     const updated = await this.prismaService.$transaction(async (tx) => {
@@ -425,7 +557,7 @@ export class ResultsService {
         data: {
           winningTeam: dto.winningTeam,
           mvpUserId: dto.mvpUserId ?? result.mvpUserId,
-          balanceRating: dto.balanceRating ?? result.balanceRating,
+          balanceRating: balanceFeeling ?? result.balanceRating,
           payloadJson: toPrismaJson(nextPayload),
           resultStatus: ResultStatus.CONFIRMED,
           confirmedAt: resolvedAt,
@@ -531,7 +663,14 @@ export class ResultsService {
     });
 
     if (!result) {
-      throw new NotFoundException('Match result not found.');
+      throw new AppException(
+        HttpStatus.NOT_FOUND,
+        AppErrorCode.RESULT_NOT_FOUND,
+        'Match result not found.',
+        {
+          resultId: matchResultId,
+        },
+      );
     }
 
     const participants = result.match.players.filter(
@@ -648,9 +787,13 @@ export class ResultsService {
   private buildMatchResultResponse(
     result: {
       id: string;
+      matchId: string;
       winningTeam: TeamSide | null;
       resultStatus: ResultStatus;
       inputMode: InputMode;
+      submittedBy: string;
+      updatedAt: Date;
+      balanceRating: number | null;
       version: number;
       confirmedAt: Date | null;
       adminResolvedById: string | null;
@@ -667,17 +810,25 @@ export class ResultsService {
     },
     stats: Array<{
       userId: string;
+      teamSide: TeamSide;
+      role: Position;
       kills: number;
       deaths: number;
       assists: number;
       laneResult: LaneResult;
+      contributionRating: number | null;
     }>,
   ): MatchResultResponseDto {
     return {
       id: result.id,
+      matchId: result.matchId,
       winningTeam: result.winningTeam,
       resultStatus: result.resultStatus,
       inputMode: result.inputMode,
+      submittedBy: result.submittedBy,
+      updatedAt: result.updatedAt.toISOString(),
+      balanceRating: result.balanceRating,
+      balanceFeeling: result.balanceRating,
       version: result.version,
       confirmedAt: result.confirmedAt?.toISOString() ?? null,
       adminResolvedById: result.adminResolvedById,
@@ -685,10 +836,13 @@ export class ResultsService {
       adminResolvedAt: result.adminResolvedAt?.toISOString() ?? null,
       players: stats.map((stat) => ({
         userId: stat.userId,
+        teamSide: stat.teamSide,
+        role: stat.role,
         kills: stat.kills,
         deaths: stat.deaths,
         assists: stat.assists,
         laneResult: stat.laneResult,
+        contributionRating: stat.contributionRating,
       })),
       confirmations: result.confirmations.map((confirmation) => ({
         userId: confirmation.userId,
@@ -702,15 +856,63 @@ export class ResultsService {
   }
 
   private buildSubmissionResponse(
-    resultId: string,
-    status: ResultStatus,
+    result: {
+      id: string;
+      matchId: string;
+      resultStatus: ResultStatus;
+      submittedBy: string;
+      updatedAt: Date;
+      winningTeam: TeamSide | null;
+      mvpUserId: string | null;
+      balanceRating: number | null;
+    },
     participantCount: number,
   ): ResultSubmissionResponseDto {
     return {
-      resultId,
-      status,
+      resultId: result.id,
+      matchId: result.matchId,
+      status: result.resultStatus,
       confirmationNeeded: Math.max(0, Math.ceil(participantCount * 0.7) - 1),
+      updatedBy: result.submittedBy,
+      savedAt: result.updatedAt.toISOString(),
+      winningTeam: result.winningTeam,
+      mvpUserId: result.mvpUserId,
+      balanceRating: result.balanceRating,
+      balanceFeeling: result.balanceRating,
+      isFinalized: result.resultStatus === ResultStatus.CONFIRMED,
     };
+  }
+
+  private resolveBalanceFeeling(
+    dto: {
+      balanceRating?: number | null;
+      balanceFeeling?: number | null;
+    },
+  ): number {
+    const value = dto.balanceFeeling ?? dto.balanceRating;
+
+    if (typeof value !== 'number' || value < 1 || value > 5) {
+      throw new AppException(
+        HttpStatus.BAD_REQUEST,
+        AppErrorCode.INVALID_REQUEST,
+        'Balance feeling must be a number between 1 and 5.',
+      );
+    }
+
+    return value;
+  }
+
+  private resolveOptionalBalanceFeeling(
+    dto: {
+      balanceRating?: number | null;
+      balanceFeeling?: number | null;
+    },
+  ): number | null {
+    if (dto.balanceFeeling === undefined && dto.balanceRating === undefined) {
+      return null;
+    }
+
+    return this.resolveBalanceFeeling(dto);
   }
 
   private extractProposedWinningTeam(
@@ -782,7 +984,15 @@ export class ResultsService {
       return;
     }
 
-    throw new ForbiddenException('Only admins or group admins can resolve disputed results.');
+    throw new AppException(
+      HttpStatus.FORBIDDEN,
+      AppErrorCode.RESULT_RESOLVE_FORBIDDEN,
+      'Only admins or group admins can resolve disputed results.',
+      {
+        groupId,
+        userId,
+      },
+    );
   }
 
   private async getResultAdminRecipientUserIds(groupId: string): Promise<string[]> {

@@ -8,15 +8,18 @@ import {
   TeamSide,
 } from '@prisma/client';
 
+import { AppErrorCode } from '../src/common/app.exception';
 import { ResultsService } from '../src/results/results.service';
 
 describe('ResultsService', () => {
   const prismaService = {
     inhouseMatchResult: {
+      findUnique: jest.fn(),
       findFirst: jest.fn(),
       update: jest.fn(),
     },
     inhousePlayerStat: {
+      upsert: jest.fn(),
       updateMany: jest.fn(),
     },
     inhouseMatch: {
@@ -33,6 +36,7 @@ describe('ResultsService', () => {
     $transaction: jest.fn(),
   } as any;
   const matchesService = {
+    assertMatchHostOrCaptain: jest.fn(),
     getMatchWithPlayers: jest.fn(),
   } as any;
   const notificationService = {
@@ -124,6 +128,58 @@ describe('ResultsService', () => {
     expect(notificationService.createMany).not.toHaveBeenCalled();
     expect(queueService.enqueuePowerRecalculation).not.toHaveBeenCalled();
     expect(auditLogService.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects overwriting an already finalized result', async () => {
+    matchesService.assertMatchHostOrCaptain.mockResolvedValue(undefined);
+    matchesService.getMatchWithPlayers.mockResolvedValue({
+      id: 'match-1',
+      title: 'Night Match',
+      players: [
+        {
+          userId: 'u1',
+          teamSide: TeamSide.A,
+          assignedRole: 'TOP',
+        },
+      ],
+    });
+    prismaService.inhouseMatchResult.findUnique.mockResolvedValue({
+      id: 'result-1',
+      matchId: 'match-1',
+      winningTeam: TeamSide.A,
+      mvpUserId: 'u1',
+      balanceRating: 4,
+      resultStatus: ResultStatus.CONFIRMED,
+      submittedBy: 'host-1',
+      updatedAt: new Date('2026-04-18T14:00:00Z'),
+      idempotencyKey: null,
+    });
+
+    await expect(
+      service.submitQuickResult(
+        'host-1',
+        'match-1',
+        {
+          winningTeam: TeamSide.A,
+          mvpUserId: 'u1',
+          balanceFeeling: 4,
+          players: [
+            {
+              userId: 'u1',
+              kills: 5,
+              deaths: 1,
+              assists: 7,
+              laneResult: LaneResult.WIN,
+            },
+          ],
+        },
+        'idem-1',
+      ),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: AppErrorCode.RESULT_ALREADY_FINALIZED,
+      }),
+    });
   });
 
   it('resolves a disputed result through admin workflow and enqueues recalculation', async () => {

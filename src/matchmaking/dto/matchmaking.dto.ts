@@ -29,6 +29,12 @@ export class AutoBalanceDto {
   @IsArray()
   @IsString({ each: true })
   lockedPlayerIds?: string[];
+
+  @ApiPropertyOptional({ type: [String] })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  excludePreviousCombinationKeys?: string[];
 }
 
 export class RerollDto extends AutoBalanceDto {
@@ -37,6 +43,16 @@ export class RerollDto extends AutoBalanceDto {
   @IsArray()
   @IsString({ each: true })
   excludeCandidateIds?: string[];
+
+  @ApiPropertyOptional({ default: true })
+  @IsOptional()
+  @IsBoolean()
+  excludePreviousCombination?: boolean = true;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  regenerateNonce?: string;
 }
 
 export class SelectCandidateDto {
@@ -121,6 +137,9 @@ class CandidateExplanationDetailsDto {
 export class MatchmakingCandidateDto {
   @ApiProperty()
   candidateId!: string;
+
+  @ApiProperty()
+  combinationKey!: string;
 
   @ApiProperty()
   candidateNo!: number;
@@ -238,4 +257,10 @@ export class BalancePreviewDto {
   @IsArray()
   @IsString({ each: true })
   excludeCandidateIds?: string[];
+
+  @ApiPropertyOptional({ type: [String] })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  excludePreviousCombinationKeys?: string[];
 }

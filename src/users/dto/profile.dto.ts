@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { Position, UserStatus } from '@prisma/client';
+import { MatchStatus, Position, ResultStatus, TeamSide, UserStatus } from '@prisma/client';
 import { Type } from 'class-transformer';
 import {
   IsArray,
@@ -74,6 +74,44 @@ export class MeResponseDto {
   noshowCount!: number;
 }
 
+export class UserProfileResponseDto {
+  @ApiProperty()
+  id!: string;
+
+  @ApiProperty()
+  userId!: string;
+
+  @ApiProperty()
+  nickname!: string;
+
+  @ApiPropertyOptional({ enum: Position, nullable: true, required: false })
+  primaryPosition!: Position | null;
+
+  @ApiPropertyOptional({ enum: Position, nullable: true, required: false })
+  mainPosition!: Position | null;
+
+  @ApiPropertyOptional({ enum: Position, nullable: true, required: false })
+  secondaryPosition!: Position | null;
+
+  @ApiProperty()
+  isFillAvailable!: boolean;
+
+  @ApiProperty({ nullable: true, required: false })
+  recentPower!: number | null;
+
+  @ApiProperty()
+  profileVisible!: boolean;
+
+  @ApiProperty({ type: [String] })
+  styleTags!: string[];
+
+  @ApiProperty()
+  mannerScore!: number;
+
+  @ApiProperty()
+  noshowCount!: number;
+}
+
 export class InhouseHistoryQueryDto {
   @ApiPropertyOptional()
   @IsOptional()
@@ -89,7 +127,25 @@ export class InhouseHistoryQueryDto {
 
 class InhouseHistoryItemDto {
   @ApiProperty()
+  id!: string;
+
+  @ApiProperty()
   matchId!: string;
+
+  @ApiProperty()
+  canonicalMatchId!: string;
+
+  @ApiProperty()
+  groupId!: string;
+
+  @ApiPropertyOptional()
+  groupName!: string | null;
+
+  @ApiPropertyOptional()
+  title!: string | null;
+
+  @ApiProperty({ enum: MatchStatus })
+  status!: MatchStatus;
 
   @ApiProperty()
   scheduledAt!: string;
@@ -108,6 +164,12 @@ class InhouseHistoryItemDto {
 
   @ApiProperty()
   deltaMmr!: number;
+
+  @ApiProperty({ enum: TeamSide, nullable: true, required: false })
+  winningTeam!: TeamSide | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  resultStatus!: ResultStatus | null;
 }
 
 export class InhouseHistoryResponseDto {

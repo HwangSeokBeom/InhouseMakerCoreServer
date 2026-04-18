@@ -9,6 +9,7 @@ import {
 import { Request, Response } from 'express';
 
 import { AuthErrorCode } from '../../auth/auth-error-code';
+import { AppErrorCode } from '../app.exception';
 
 @Catch()
 export class GlobalExceptionFilter implements ExceptionFilter {
@@ -29,25 +30,34 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       typeof exceptionResponse === 'string'
         ? { message: exceptionResponse }
         : (exceptionResponse as Record<string, unknown> | null) ?? {};
-    const message =
+    const rawMessage =
       responseBody.message ??
       (exception instanceof Error ? exception.message : 'Internal server error');
+    const message = Array.isArray(rawMessage) ? rawMessage.join(', ') : rawMessage;
+    const details =
+      responseBody.details && typeof responseBody.details === 'object'
+        ? (responseBody.details as Record<string, unknown>)
+        : {};
     const code =
       typeof responseBody.code === 'string'
         ? responseBody.code
         : typeof responseBody.errorCode === 'string'
           ? responseBody.errorCode
           : status === HttpStatus.BAD_REQUEST
-            ? AuthErrorCode.INVALID_PAYLOAD
+            ? AppErrorCode.VALIDATION_ERROR
+            : status === HttpStatus.CONFLICT
+              ? AppErrorCode.INVALID_REQUEST
             : status === HttpStatus.UNAUTHORIZED
-              ? AuthErrorCode.AUTH_REQUIRED
+              ? AppErrorCode.AUTH_REQUIRED
+              : status === HttpStatus.NOT_FOUND
+                ? AppErrorCode.NOT_FOUND
               : status === HttpStatus.TOO_MANY_REQUESTS
                 ? AuthErrorCode.RATE_LIMITED
               : status === HttpStatus.FORBIDDEN
-                ? AuthErrorCode.FORBIDDEN_FEATURE
+                ? AppErrorCode.FORBIDDEN
               : status === HttpStatus.INTERNAL_SERVER_ERROR
                 ? AuthErrorCode.INTERNAL_SERVER_ERROR
-            : undefined;
+                : undefined;
 
     if (!isHttpException) {
       this.logger.error(
@@ -62,8 +72,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       ...responseBody,
       provider:
         responseBody.provider === undefined ? null : responseBody.provider,
-      details:
-        responseBody.details === undefined ? {} : responseBody.details,
+      details,
       ...(code ? { code } : {}),
       message,
       timestamp: new Date().toISOString(),

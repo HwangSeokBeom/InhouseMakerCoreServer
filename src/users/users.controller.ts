@@ -8,6 +8,7 @@ import {
   InhouseHistoryQueryDto,
   InhouseHistoryResponseDto,
   MeResponseDto,
+  UserProfileResponseDto,
   UserStatsQueryDto,
   UserStatsResponseDto,
 } from './dto/profile.dto';
@@ -25,6 +26,16 @@ export class UsersController {
   @ApiOkResponse({ type: MeResponseDto })
   getMe(@CurrentUser() user: AuthenticatedUser): Promise<MeResponseDto> {
     return this.usersService.getMe(user.userId);
+  }
+
+  @Get(':userId/profile')
+  @ApiOperation({ summary: 'Get a user profile summary for group and match surfaces.' })
+  @ApiOkResponse({ type: UserProfileResponseDto })
+  getUserProfile(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('userId') userId: string,
+  ): Promise<UserProfileResponseDto> {
+    return this.usersService.getUserProfile(user.userId, userId);
   }
 
   @Get(':userId/inhouse-history')

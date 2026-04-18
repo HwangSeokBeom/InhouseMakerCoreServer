@@ -5,7 +5,7 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
 
 import { AppModule } from './app.module';
-import { AuthErrorCode } from './auth/auth-error-code';
+import { AppErrorCode } from './common/app.exception';
 import { PrismaService } from './prisma/prisma.service';
 
 async function bootstrap(): Promise<void> {
@@ -23,7 +23,7 @@ async function bootstrap(): Promise<void> {
       exceptionFactory: (errors: ValidationError[]) =>
         new BadRequestException({
           success: false,
-          code: AuthErrorCode.INVALID_PAYLOAD,
+          code: AppErrorCode.VALIDATION_ERROR,
           message: 'Payload is invalid.',
           details: {
             validationErrors: errors.flatMap((error) =>

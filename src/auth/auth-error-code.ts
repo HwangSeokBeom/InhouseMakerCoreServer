@@ -10,6 +10,7 @@ export enum AuthErrorCode {
   INVALID_PAYLOAD = 'INVALID_PAYLOAD',
   INTERNAL_SERVER_ERROR = 'INTERNAL_SERVER_ERROR',
   NICKNAME_ALREADY_IN_USE = 'NICKNAME_ALREADY_IN_USE',
+  RESOURCE_NOT_FOUND = 'RESOURCE_NOT_FOUND',
   PROVIDER_CONFLICT = 'PROVIDER_CONFLICT',
   REQUIRED_TERMS_NOT_AGREED = 'REQUIRED_TERMS_NOT_AGREED',
   SOCIAL_TOKEN_INVALID = 'SOCIAL_TOKEN_INVALID',
@@ -33,6 +34,7 @@ export const AUTH_ERROR_MESSAGES: Record<AuthErrorCode, string> = {
   [AuthErrorCode.INVALID_PAYLOAD]: 'Payload is invalid.',
   [AuthErrorCode.INTERNAL_SERVER_ERROR]: 'Internal server error.',
   [AuthErrorCode.NICKNAME_ALREADY_IN_USE]: 'Nickname is already in use.',
+  [AuthErrorCode.RESOURCE_NOT_FOUND]: 'Requested resource was not found.',
   [AuthErrorCode.PROVIDER_CONFLICT]: 'Authentication provider does not match the account.',
   [AuthErrorCode.REQUIRED_TERMS_NOT_AGREED]:
     'Required terms must be agreed before signup.',

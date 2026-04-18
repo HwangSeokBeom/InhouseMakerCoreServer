@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Put, Query, UseGuards } from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiCreatedResponse,
@@ -14,6 +14,10 @@ import {
   AddMatchPlayersDto,
   CreateMatchDto,
   MatchResponseDto,
+  MatchRematchInputResponseDto,
+  RecentMatchListResponseDto,
+  RecentMatchesQueryDto,
+  SaveManualBalanceDto,
   MatchSummaryResponseDto,
   UpdateMatchPlayerDto,
 } from './dto/matches.dto';
@@ -37,6 +41,16 @@ export class MatchesController {
     return this.matchesService.createMatch(user.userId, groupId, dto);
   }
 
+  @Get('matches/recent')
+  @ApiOperation({ summary: 'List recent matches across groups the requester can access.' })
+  @ApiOkResponse({ type: RecentMatchListResponseDto })
+  listRecentMatches(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: RecentMatchesQueryDto,
+  ): Promise<RecentMatchListResponseDto> {
+    return this.matchesService.listRecentMatches(user.userId, query);
+  }
+
   @Get('matches/:matchId')
   @ApiOperation({ summary: 'Get match details.' })
   @ApiOkResponse({ type: MatchResponseDto })
@@ -45,6 +59,16 @@ export class MatchesController {
     @Param('matchId') matchId: string,
   ): Promise<MatchResponseDto> {
     return this.matchesService.getMatch(user.userId, matchId);
+  }
+
+  @Get('matches/:matchId/rematch-input')
+  @ApiOperation({ summary: 'Get a rematch-ready player snapshot for a past match.' })
+  @ApiOkResponse({ type: MatchRematchInputResponseDto })
+  getRematchInput(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('matchId') matchId: string,
+  ): Promise<MatchRematchInputResponseDto> {
+    return this.matchesService.getRematchInput(user.userId, matchId);
   }
 
   @Post('matches/:matchId/players')
@@ -78,6 +102,17 @@ export class MatchesController {
     @Param('matchId') matchId: string,
   ): Promise<MatchResponseDto> {
     return this.matchesService.lockMatch(user.userId, matchId);
+  }
+
+  @Put('matches/:matchId/manual-balance')
+  @ApiOperation({ summary: 'Persist a manual team balance assignment for a match.' })
+  @ApiOkResponse({ type: MatchResponseDto })
+  saveManualBalance(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('matchId') matchId: string,
+    @Body() dto: SaveManualBalanceDto,
+  ): Promise<MatchResponseDto> {
+    return this.matchesService.saveManualBalance(user.userId, matchId, dto);
   }
 
   @Post('matches/:matchId/reopen')
