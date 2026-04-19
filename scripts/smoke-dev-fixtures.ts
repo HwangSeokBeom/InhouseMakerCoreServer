@@ -3,10 +3,26 @@ import axios, { AxiosInstance } from 'axios';
 import { DEV_FIXTURE_IDS, DEV_UI_FIXTURE_SCENARIOS, resolveDevFixturePassword } from '../prisma/dev-fixtures';
 
 type ScenarioName = keyof typeof DEV_UI_FIXTURE_SCENARIOS;
+const REQUIRED_LANES = ['TOP', 'JUNGLE', 'MID', 'ADC', 'SUPPORT'] as const;
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
     throw new Error(message);
+  }
+}
+
+function assertPowerProfileContract(data: any, label: string): void {
+  assert(Number(data?.overallPower) > 0, `${label} overallPower should be populated`);
+  assert(typeof data?.primaryPosition === 'string', `${label} primaryPosition should be populated`);
+  assert(typeof data?.secondaryPosition === 'string', `${label} secondaryPosition should be populated`);
+  assert(typeof data?.style?.stability === 'number', `${label} style.stability should be populated`);
+  assert(typeof data?.style?.roleFocus === 'string', `${label} style.roleFocus should be populated`);
+
+  for (const lane of REQUIRED_LANES) {
+    assert(
+      typeof data?.lanePower?.[lane] === 'number',
+      `${label} lanePower.${lane} should be populated`,
+    );
   }
 }
 
@@ -43,10 +59,11 @@ async function runDefaultScenario(client: AxiosInstance, password: string): Prom
 
   const selfPower = await get(client, `/users/${scenario.userId}/power-profile`, token);
   assert(selfPower.status === 200, 'default user power profile should return 200');
-  assert(Number(selfPower.data.overallPower) > 0, 'default user should have populated power profile');
+  assertPowerProfileContract(selfPower.data, 'default user power profile');
 
   const sharedPower = await get(client, `/users/${DEV_FIXTURE_IDS.users.profile}/power-profile`, token);
   assert(sharedPower.status === 200, 'shared group profile power lookup should return 200');
+  assertPowerProfileContract(sharedPower.data, 'shared group power profile');
 
   const stats = await get(client, `/users/${scenario.userId}/stats`, token);
   assert(stats.status === 200, 'default user stats should return 200');

@@ -297,6 +297,20 @@ class MatchResultSummaryDto {
   playerStatsCount!: number;
 }
 
+class MatchResultInputPlayerDto {
+  @ApiProperty()
+  userId!: string;
+
+  @ApiProperty()
+  nickname!: string;
+
+  @ApiProperty({ enum: TeamSide })
+  teamSide!: TeamSide;
+
+  @ApiProperty({ enum: Position })
+  assignedRole!: Position;
+}
+
 class MatchRematchPlayerDto {
   @ApiProperty()
   userId!: string;
@@ -438,6 +452,18 @@ export class MatchResponseDto {
 
   @ApiProperty({ type: MatchRematchInputResponseDto, nullable: true })
   rematchInput!: MatchRematchInputResponseDto | null;
+
+  @ApiPropertyOptional()
+  canSubmitResult?: boolean;
+
+  @ApiPropertyOptional({ nullable: true })
+  resultInputBlockedReason?: string | null;
+
+  @ApiPropertyOptional({ type: [MatchResultInputPlayerDto] })
+  mvpCandidates?: MatchResultInputPlayerDto[];
+
+  @ApiPropertyOptional({ type: [MatchResultInputPlayerDto] })
+  laneResultTargets?: MatchResultInputPlayerDto[];
 }
 
 class MatchSummaryPlayerDto {

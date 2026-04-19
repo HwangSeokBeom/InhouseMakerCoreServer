@@ -7,6 +7,8 @@ import { GroupsController } from '../src/groups/groups.controller';
 import { GroupsService } from '../src/groups/groups.service';
 import { RecruitingController } from '../src/recruiting/recruiting.controller';
 import { RecruitingService } from '../src/recruiting/recruiting.service';
+import { UsersController } from '../src/users/users.controller';
+import { UsersService } from '../src/users/users.service';
 
 function collectRoutes(stack: any[] | undefined, routes: string[] = []): string[] {
   if (!Array.isArray(stack)) {
@@ -35,7 +37,7 @@ describe('HTTP route registration', () => {
 
   beforeAll(async () => {
     @Module({
-      controllers: [RecruitingController, GroupsController],
+      controllers: [RecruitingController, GroupsController, UsersController],
       providers: [
         {
           provide: RecruitingService,
@@ -64,6 +66,16 @@ describe('HTTP route registration', () => {
             getRecentMatches: jest.fn(),
           },
         },
+        {
+          provide: UsersService,
+          useValue: {
+            getMe: jest.fn(),
+            searchInviteUsers: jest.fn(),
+            getUserProfile: jest.fn(),
+            getInhouseHistory: jest.fn(),
+            getUserStats: jest.fn(),
+          },
+        },
       ],
     })
     class RouteTestModule {}
@@ -90,6 +102,8 @@ describe('HTTP route registration', () => {
         'PATCH /groups/:groupId',
         'DELETE /groups/:groupId',
         'GET /groups/:groupId/member-candidates',
+        'GET /users/search',
+        'GET /users',
       ]),
     );
   });

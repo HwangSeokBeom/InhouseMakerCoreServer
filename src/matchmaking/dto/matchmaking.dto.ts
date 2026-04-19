@@ -178,6 +178,12 @@ export class MatchmakingCandidateDto {
 export class MatchmakingCandidatesResponseDto {
   @ApiProperty({ type: [MatchmakingCandidateDto] })
   candidates!: MatchmakingCandidateDto[];
+
+  @ApiPropertyOptional({ type: Object })
+  meta?: Record<string, unknown>;
+
+  @ApiPropertyOptional({ type: Object })
+  debug?: Record<string, unknown>;
 }
 
 export class BalancePreviewPlayerDto {

@@ -13,6 +13,11 @@ import {
 import { LanePowerCalculator } from './calculators/lane-power.calculator';
 import { OverallPowerCalculator } from './calculators/overall-power.calculator';
 import { StyleScoreCalculator } from './calculators/style-score.calculator';
+import {
+  buildPowerProfileDisplayScore,
+  normalizeLanePower,
+  normalizeStyleScores,
+} from './power-profile.contract';
 import { PowerProfileResponseDto } from './dto/power-profile.dto';
 import { POWER_PROFILE_VERSION, POWER_ROLES, PowerRole } from './power.constants';
 
@@ -302,22 +307,10 @@ export class PowerService {
         profile.userId,
         {
           overallPower: profile.overallPower,
-          lanePower:
-            (profile.lanePowerJson as Record<string, number> | null) ??
-            this.defaultLanePower(profile.overallPower),
+          lanePower: normalizeLanePower(profile.overallPower, profile.lanePowerJson ?? null),
         },
       ]),
     );
-  }
-
-  private defaultLanePower(overallPower: number): Record<string, number> {
-    return {
-      [Position.TOP]: overallPower,
-      [Position.JUNGLE]: overallPower,
-      [Position.MID]: overallPower,
-      [Position.ADC]: overallPower,
-      [Position.SUPPORT]: overallPower,
-    };
   }
 
   private toResponse(profile: {
@@ -340,9 +333,10 @@ export class PowerService {
     const explanation = {
       ...((profile.breakdownJson as Record<string, unknown> | null) ?? {}),
     };
+    const lanePower = normalizeLanePower(profile.overallPower, profile.lanePowerJson ?? null);
     explanation.displayScore =
       explanation.displayScore ??
-      this.buildDisplayScoreDebug({
+      buildPowerProfileDisplayScore({
         overallPower: profile.overallPower,
         version: profile.version,
         calculatedAt: profile.calculatedAt,
@@ -350,23 +344,17 @@ export class PowerService {
     const inhouseWeight = Number(
       (explanation.inhouse as { inhouseWeight?: number } | undefined)?.inhouseWeight ?? 0.15,
     );
+    const style = normalizeStyleScores(profile.styleScoresJson, {
+      overallPower: profile.overallPower,
+      lanePower,
+      primaryPosition: profile.user?.primaryPosition ?? null,
+    });
 
     return {
       userId: profile.userId,
       overallPower: profile.overallPower,
-      lanePower: (profile.lanePowerJson as Record<string, number> | null) ?? {},
-      style:
-        (profile.styleScoresJson as {
-          stability: number;
-          carry: number;
-          teamContribution: number;
-          laneInfluence: number;
-        } | null) ?? {
-          stability: 50,
-          carry: 50,
-          teamContribution: 50,
-          laneInfluence: 50,
-        },
+      lanePower,
+      style,
       basePower: profile.basePower,
       formScore: profile.formScore,
       inhouseMmr: profile.inhouseMmr,
@@ -427,16 +415,7 @@ export class PowerService {
     version: string;
     calculatedAt: Date;
   }) {
-    return {
-      sourceField: 'overallPower',
-      serverStoredOverallPower: Number(input.overallPower.toFixed(2)),
-      dtoOverallPower: Number(input.overallPower.toFixed(2)),
-      clientDisplayRaw: Number(input.overallPower.toFixed(2)),
-      clientDisplayRounded: Math.round(input.overallPower),
-      roundingMode: 'rounded()',
-      profileVersion: input.version,
-      profileCalculatedAt: input.calculatedAt.toISOString(),
-    };
+    return buildPowerProfileDisplayScore(input);
   }
 
   private powerToRating(power: number): number {

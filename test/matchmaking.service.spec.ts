@@ -1,13 +1,15 @@
-import { Position } from '@prisma/client';
+import { ParticipationStatus, Position } from '@prisma/client';
 
 import { MatchmakingAlgorithmService } from '../src/matchmaking/matchmaking-algorithm.service';
 import { MatchmakingService } from '../src/matchmaking/matchmaking.service';
+import { DEV_GROUP_MEMBER_FIXTURES } from './support/dev-group-member-fixtures';
 
 describe('MatchmakingService', () => {
   const createService = () => {
     const prismaService = {
       inhouseMatch: {
         update: jest.fn(),
+        findMany: jest.fn(),
       },
     };
     const matchesService = {
@@ -73,5 +75,59 @@ describe('MatchmakingService', () => {
     expect(prismaService.inhouseMatch.update).not.toHaveBeenCalled();
     expect(matchesService.getMatchWithPlayers).not.toHaveBeenCalled();
     expect(powerService.getPowerMapForUsers).not.toHaveBeenCalled();
+  });
+
+  it('generates at least one persisted candidate from the 10-player dev seed shape', async () => {
+    const { service, prismaService, matchesService, powerService } = createService();
+    const players = DEV_GROUP_MEMBER_FIXTURES.map((fixture, index) => ({
+      id: `player-${index + 1}`,
+      userId: `user-${index + 1}`,
+      participationStatus: ParticipationStatus.ACCEPTED,
+      teamSide: null,
+      assignedRole: null,
+      sameTeamPreferencesJson: [],
+      avoidTeamPreferencesJson: [],
+      isCaptain: index === 0,
+      user: {
+        id: `user-${index + 1}`,
+        nickname: fixture.nickname,
+        primaryPosition: fixture.primaryPosition,
+        secondaryPosition: fixture.secondaryPosition,
+        isFillAvailable: true,
+      },
+    }));
+
+    matchesService.getMatchWithPlayers.mockResolvedValue({
+      id: 'match-1',
+      groupId: 'group-1',
+      players,
+    });
+    powerService.getPowerMapForUsers.mockResolvedValue(
+      new Map(
+        DEV_GROUP_MEMBER_FIXTURES.map((fixture, index) => [
+          `user-${index + 1}`,
+          {
+            overallPower: fixture.overallPower,
+            lanePower: fixture.lanePower,
+          },
+        ]),
+      ),
+    );
+    prismaService.inhouseMatch.findMany.mockResolvedValue([]);
+    prismaService.inhouseMatch.update.mockResolvedValue({});
+
+    const response = await service.autoBalance('user-1', 'match-1', {});
+
+    expect(response.candidates.length).toBeGreaterThanOrEqual(1);
+    expect(response.candidates[0].teamA).toHaveLength(5);
+    expect(response.candidates[0].teamB).toHaveLength(5);
+    expect(prismaService.inhouseMatch.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'match-1' },
+        data: expect.objectContaining({
+          candidatesJson: expect.anything(),
+        }),
+      }),
+    );
   });
 });

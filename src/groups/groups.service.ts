@@ -6,11 +6,16 @@ import {
   ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
-import { GroupRole, GroupVisibility, UserStatus } from '@prisma/client';
+import { GroupRole, GroupVisibility, Prisma, UserStatus } from '@prisma/client';
 
 import { AuditLogService } from '../common/audit-log.service';
 import { AppErrorCode, AppException } from '../common/app.exception';
+import {
+  buildAccessDeniedDebugDetails,
+  buildMissingResourceDebugDetails,
+} from '../common/request-debug.util';
 import { PrismaService } from '../prisma/prisma.service';
+import { UsersService } from '../users/users.service';
 import {
   AddGroupMemberDto,
   CreateGroupDto,
@@ -31,10 +36,12 @@ import {
 @Injectable()
 export class GroupsService {
   private readonly logger = new Logger(GroupsService.name);
+  private readonly groupLiveLogger = new Logger('GroupLiveDebug');
 
   constructor(
     private readonly prismaService: PrismaService,
     private readonly auditLogService: AuditLogService,
+    private readonly usersService: UsersService,
   ) {}
 
   async createGroup(
@@ -159,7 +166,7 @@ export class GroupsService {
         deniedReason: 'GROUP_NOT_FOUND',
         returnedStatusCode: 404,
       });
-      throw this.createGroupUnavailableException('GROUP_NOT_FOUND');
+      throw this.createGroupUnavailableException('GROUP_NOT_FOUND', undefined, groupId);
     }
 
     const access = this.toGroupAccessContext(groupId, requesterUserId, group);
@@ -173,7 +180,7 @@ export class GroupsService {
         deniedReason: 'GROUP_UNAVAILABLE',
         returnedStatusCode: 404,
       });
-      throw this.createGroupUnavailableException('GROUP_UNAVAILABLE');
+      throw this.createGroupUnavailableException('GROUP_UNAVAILABLE', undefined, groupId);
     }
 
     if (group.visibility === GroupVisibility.PRIVATE && !access.isMember) {
@@ -188,8 +195,13 @@ export class GroupsService {
       throw this.createGroupAccessDeniedException(
         'You must be a group member to view this group.',
         'NOT_GROUP_MEMBER',
+        group.id,
       );
     }
+
+    this.groupLiveLogger.log(
+      `[GroupLiveDebug] groupId=${group.id} memberCount=${group._count.members} source=live`,
+    );
 
     return this.toGroupDetail(group, {
       requesterUserId,
@@ -439,7 +451,7 @@ export class GroupsService {
       throw new AppException(
         HttpStatus.NOT_FOUND,
         AppErrorCode.USER_NOT_FOUND,
-        'User not found.',
+        '추가할 사용자를 찾을 수 없어요.',
         {
           groupId,
           userId: dto.userId,
@@ -472,7 +484,7 @@ export class GroupsService {
       throw new AppException(
         HttpStatus.CONFLICT,
         AppErrorCode.GROUP_MEMBER_ALREADY_EXISTS,
-        'This user is already a member of the group.',
+        '이미 그룹 멤버예요.',
         {
           groupId,
           userId: dto.userId,
@@ -481,13 +493,18 @@ export class GroupsService {
       );
     }
 
-    await this.prismaService.groupMember.create({
-      data: {
-        groupId,
-        userId: dto.userId,
-        role,
-      },
-    });
+    try {
+      await this.prismaService.groupMember.create({
+        data: {
+          groupId,
+          userId: dto.userId,
+          role,
+        },
+      });
+    } catch (error) {
+      this.rethrowAddMemberWriteError(error, groupId, dto.userId);
+      throw error;
+    }
 
     return this.listMembers(requesterUserId, groupId);
   }
@@ -502,81 +519,54 @@ export class GroupsService {
       operation: 'GET /groups/:groupId/member-candidates',
     });
 
-    const users = await this.prismaService.user.findMany({
-      where: {
-        status: UserStatus.ACTIVE,
-        nickname: {
-          contains: query.query,
-          mode: 'insensitive',
-        },
+    const users = await this.usersService.findInviteUsers(
+      requesterUserId,
+      {
+        query: query.query,
+        limit: query.limit,
       },
-      select: {
-        id: true,
-        nickname: true,
-        primaryPosition: true,
-        powerProfile: {
-          select: {
-            overallPower: true,
-          },
-        },
-        riotAccounts: {
-          where: {
-            isPrimary: true,
-          },
-          select: {
-            riotGameName: true,
-            tagLine: true,
-            region: true,
-            profileIconId: true,
-            summonerLevel: true,
-          },
-          take: 1,
-        },
-        groupMemberships: {
-          where: {
-            groupId,
-          },
-          select: {
-            role: true,
-          },
-          take: 1,
-        },
+      {
+        groupId,
       },
-      orderBy: [{ nickname: 'asc' }],
-      take: query.limit ?? 20,
-    });
+    );
 
     return {
       items: users.map((user) => {
-        const membership = user.groupMemberships[0] ?? null;
-        const isSelf = user.id === requesterUserId;
-        const alreadyMember = membership !== null;
-        const inviteBlockedReason = isSelf
-          ? 'CANNOT_ADD_SELF'
-          : alreadyMember
-            ? 'ALREADY_MEMBER'
-            : null;
-        const primaryRiotAccount = user.riotAccounts[0] ?? null;
+        const isSelf = user.isSelf;
+        const isAlreadyMember = user.isAlreadyMember ?? user.alreadyMember ?? false;
+        const inviteBlockedReason =
+          user.inviteBlockedReason ??
+          (isSelf ? 'CANNOT_ADD_SELF' : isAlreadyMember ? 'ALREADY_MEMBER' : null);
+        const isEligible = user.isEligible ?? inviteBlockedReason === null;
 
         return {
           id: user.id,
-          userId: user.id,
+          userId: user.userId,
           nickname: user.nickname,
-          profileImageUrl: null,
-          riotAccountSummary: primaryRiotAccount
+          primaryPosition: user.primaryPosition,
+          mainPosition: user.mainPosition,
+          secondaryPosition: user.secondaryPosition,
+          profileImageUrl: user.profileImageUrl,
+          riotDisplayName: user.riotDisplayName,
+          riotGameName: user.riotGameName,
+          tagLine: user.tagLine,
+          riotAccountSummary: user.riotGameName
             ? {
-                gameName: primaryRiotAccount.riotGameName,
-                tagLine: primaryRiotAccount.tagLine,
-                region: primaryRiotAccount.region,
-                profileIconId: primaryRiotAccount.profileIconId,
-                summonerLevel: primaryRiotAccount.summonerLevel,
+                gameName: user.riotGameName,
+                tagLine: user.tagLine ?? '',
+                region: user.region ?? 'kr',
+                profileIconId: user.profileIconId,
+                summonerLevel: user.summonerLevel,
               }
             : null,
           representativePosition: user.primaryPosition,
-          recentPower: user.powerProfile?.overallPower ?? null,
-          alreadyMember,
-          memberRole: membership?.role ?? null,
-          selectable: inviteBlockedReason === null,
+          recentPower: user.recentPower,
+          alreadyMember: user.alreadyMember ?? false,
+          isSelf,
+          isAlreadyMember,
+          isEligible,
+          memberRole: user.memberRole,
+          selectable: isEligible,
           inviteBlockedReason,
         };
       }),
@@ -602,6 +592,16 @@ export class GroupsService {
                 overallPower: true,
               },
             },
+            riotAccounts: {
+              where: {
+                isPrimary: true,
+              },
+              select: {
+                riotGameName: true,
+                tagLine: true,
+              },
+              take: 1,
+            },
           },
         },
       },
@@ -617,6 +617,13 @@ export class GroupsService {
         mainPosition: member.user.primaryPosition,
         secondaryPosition: member.user.secondaryPosition,
         recentPower: member.user.powerProfile?.overallPower ?? null,
+        riotDisplayName: this.buildRiotDisplayName(
+          member.user.riotAccounts?.[0]?.riotGameName ?? null,
+          member.user.riotAccounts?.[0]?.tagLine ?? null,
+        ),
+        isSelf: member.userId === requesterUserId,
+        isAlreadyMember: true,
+        isEligible: false,
         profileVisible: true,
         role: member.role,
       })),
@@ -866,6 +873,7 @@ export class GroupsService {
       throw this.createGroupAccessDeniedException(
         options.accessDeniedMessage ?? 'You must be a group member to perform this action.',
         'NOT_GROUP_MEMBER',
+        groupId,
       );
     }
 
@@ -897,6 +905,7 @@ export class GroupsService {
       throw this.createGroupAccessDeniedException(
         options.accessDeniedMessage ?? 'You must be a group admin to perform this action.',
         reason,
+        groupId,
       );
     }
 
@@ -1031,6 +1040,19 @@ export class GroupsService {
     return Array.isArray(value)
       ? value.filter((item): item is string => typeof item === 'string')
       : [];
+  }
+
+  private buildRiotDisplayName(
+    riotGameName: string | null,
+    tagLine: string | null,
+  ): string | null {
+    const normalizedGameName = riotGameName?.trim();
+    if (!normalizedGameName) {
+      return null;
+    }
+
+    const normalizedTagLine = tagLine?.trim();
+    return normalizedTagLine ? `${normalizedGameName}#${normalizedTagLine}` : normalizedGameName;
   }
 
   private async getRequesterAdminFlag(
@@ -1174,6 +1196,7 @@ export class GroupsService {
       throw this.createGroupUnavailableException(
         'GROUP_NOT_FOUND',
         options.unavailableMessage,
+        access.groupId,
       );
     }
 
@@ -1189,6 +1212,7 @@ export class GroupsService {
       throw this.createGroupUnavailableException(
         'GROUP_UNAVAILABLE',
         options.unavailableMessage,
+        access.groupId,
       );
     }
   }
@@ -1196,6 +1220,7 @@ export class GroupsService {
   private createGroupUnavailableException(
     reason: GroupDeniedReason,
     message = 'The group no longer exists or is unavailable.',
+    groupId?: string,
   ): AppException {
     return new AppException(
       HttpStatus.NOT_FOUND,
@@ -1203,23 +1228,95 @@ export class GroupsService {
         ? AppErrorCode.GROUP_NOT_FOUND
         : AppErrorCode.GROUP_UNAVAILABLE,
       message,
-      {
-        reason,
-      },
+      buildMissingResourceDebugDetails('groupId', groupId, reason),
     );
   }
 
   private createGroupAccessDeniedException(
     message: string,
     reason: GroupCapabilityBlockedReason = 'NOT_GROUP_MEMBER',
+    groupId?: string,
   ): AppException {
     return new AppException(
       HttpStatus.FORBIDDEN,
       AppErrorCode.GROUP_ACCESS_FORBIDDEN,
       message,
-      {
-        reason,
-      },
+      buildAccessDeniedDebugDetails('groupId', groupId, reason),
+    );
+  }
+
+  private rethrowAddMemberWriteError(
+    error: unknown,
+    groupId: string,
+    userId: string,
+  ): void {
+    if (
+      !(error instanceof Prisma.PrismaClientKnownRequestError) ||
+      (error.code !== 'P2002' && error.code !== 'P2003')
+    ) {
+      return;
+    }
+
+    if (error.code === 'P2002') {
+      throw new AppException(
+        HttpStatus.CONFLICT,
+        AppErrorCode.GROUP_MEMBER_ALREADY_EXISTS,
+        '이미 그룹 멤버예요.',
+        {
+          groupId,
+          userId,
+        },
+      );
+    }
+
+    const constraint = this.extractPrismaConstraintHint(error);
+
+    if (this.isUserForeignKeyHint(constraint)) {
+      throw new AppException(
+        HttpStatus.NOT_FOUND,
+        AppErrorCode.USER_NOT_FOUND,
+        '추가할 사용자를 찾을 수 없어요.',
+        {
+          groupId,
+          userId,
+        },
+      );
+    }
+
+    if (this.isGroupForeignKeyHint(constraint)) {
+      throw new AppException(
+        HttpStatus.NOT_FOUND,
+        AppErrorCode.GROUP_NOT_FOUND,
+        '그룹을 찾을 수 없어요.',
+        {
+          groupId,
+          userId,
+        },
+      );
+    }
+  }
+
+  private extractPrismaConstraintHint(
+    error: Prisma.PrismaClientKnownRequestError,
+  ): string {
+    const fieldName =
+      typeof error.meta?.field_name === 'string' ? error.meta.field_name : '';
+    const cause = typeof error.meta?.cause === 'string' ? error.meta.cause : '';
+
+    return `${fieldName} ${cause} ${error.message}`.toLowerCase();
+  }
+
+  private isUserForeignKeyHint(value: string): boolean {
+    return (
+      value.includes('group_members_user_id_fkey') ||
+      /(^|[^a-z])user_id([^a-z]|$)/.test(value)
+    );
+  }
+
+  private isGroupForeignKeyHint(value: string): boolean {
+    return (
+      value.includes('group_members_group_id_fkey') ||
+      /(^|[^a-z])group_id([^a-z]|$)/.test(value)
     );
   }
 

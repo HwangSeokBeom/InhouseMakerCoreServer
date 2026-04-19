@@ -4,6 +4,7 @@ import {
   LaneResult,
   MatchStatus,
   ParticipationStatus,
+  Position,
   ResultStatus,
   TeamSide,
 } from '@prisma/client';
@@ -180,6 +181,56 @@ describe('ResultsService', () => {
         code: AppErrorCode.RESULT_ALREADY_FINALIZED,
       }),
     });
+  });
+
+  it('rejects saving results when balanced lane targets are missing', async () => {
+    const roles = [
+      Position.TOP,
+      Position.JUNGLE,
+      Position.MID,
+      Position.ADC,
+      Position.SUPPORT,
+    ];
+    matchesService.assertMatchHostOrCaptain.mockResolvedValue(undefined);
+    matchesService.getMatchWithPlayers.mockResolvedValue({
+      id: 'match-1',
+      title: 'Night Match',
+      players: Array.from({ length: 10 }, (_, index) => ({
+        userId: `u${index + 1}`,
+        teamSide: index < 5 ? TeamSide.A : TeamSide.B,
+        assignedRole: index === 9 ? null : roles[index % 5],
+      })),
+    });
+    prismaService.inhouseMatchResult.findUnique.mockResolvedValue(null);
+
+    await expect(
+      service.submitQuickResult(
+        'host-1',
+        'match-1',
+        {
+          winningTeam: TeamSide.A,
+          mvpUserId: 'u1',
+          balanceFeeling: 4,
+          players: Array.from({ length: 10 }, (_, index) => ({
+            userId: `u${index + 1}`,
+            kills: 1,
+            deaths: 1,
+            assists: 1,
+            laneResult: LaneResult.EVEN,
+          })),
+        },
+        'idem-2',
+      ),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: AppErrorCode.INVALID_REQUEST,
+        details: expect.objectContaining({
+          field: 'players.assignedRole',
+          unassignedPlayerIds: ['u10'],
+        }),
+      }),
+    });
+    expect(prismaService.$transaction).not.toHaveBeenCalled();
   });
 
   it('resolves a disputed result through admin workflow and enqueues recalculation', async () => {

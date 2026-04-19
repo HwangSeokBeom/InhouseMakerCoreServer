@@ -47,6 +47,23 @@ describe('MatchesService', () => {
     service = new MatchesService(prismaService, groupsService, auditLogService);
   });
 
+  it('marks missing match ids as stale client references and flags fixture-like ids', async () => {
+    prismaService.inhouseMatch.findUnique.mockResolvedValue(null);
+
+    await expect(service.getMatch('viewer1', 'match-ui-test')).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: AppErrorCode.MATCH_NOT_FOUND,
+        details: expect.objectContaining({
+          matchId: 'match-ui-test',
+          probableCause: 'stale_client_reference',
+          fixtureHint: 'removed_fixture',
+        }),
+      }),
+    });
+
+    expect(groupsService.assertGroupMember).not.toHaveBeenCalled();
+  });
+
   it('blocks reopen for confirmed results', async () => {
     prismaService.inhouseMatch.findUnique.mockResolvedValue({
       id: 'm1',
@@ -331,6 +348,73 @@ describe('MatchesService', () => {
       'u1-TOP|u2-JUNGLE|u3-MID|u4-ADC|u5-SUPPORT',
     ]);
     expect(response.playedAt).toBe('2026-04-18T12:30:00.000Z');
+  });
+
+  it('exposes result input candidates and lane targets for a balanced 10-player match', async () => {
+    groupsService.assertGroupMember.mockResolvedValue({ isMember: true });
+    const roles = [
+      Position.TOP,
+      Position.JUNGLE,
+      Position.MID,
+      Position.ADC,
+      Position.SUPPORT,
+    ];
+    prismaService.inhouseMatch.findUnique.mockResolvedValue({
+      id: 'm1',
+      groupId: 'g1',
+      createdBy: 'host1',
+      title: 'Balanced Match',
+      notes: null,
+      status: MatchStatus.BALANCED,
+      scheduledAt: null,
+      updatedAt: new Date('2026-04-18T12:00:00.000Z'),
+      balanceMode: 'BALANCED',
+      selectedCandidateNo: 1,
+      candidatesJson: [],
+      group: {
+        id: 'g1',
+        name: 'Alpha',
+      },
+      players: Array.from({ length: 10 }, (_, index) => {
+        const role = roles[index % 5];
+        return {
+          id: `p${index + 1}`,
+          userId: `u${index + 1}`,
+          riotAccountId: null,
+          positionPrefSnapshot: null,
+          sameTeamPreferencesJson: [],
+          avoidTeamPreferencesJson: [],
+          user: {
+            id: `u${index + 1}`,
+            nickname: `User${index + 1}`,
+            primaryPosition: role,
+            secondaryPosition: null,
+            isFillAvailable: true,
+            powerProfile: {
+              overallPower: 60 + index,
+              lanePowerJson: null,
+              calculatedAt: new Date('2026-04-18T09:30:00.000Z'),
+              version: 'power-v2',
+            },
+          },
+          teamSide: index < 5 ? 'A' : 'B',
+          assignedRole: role,
+          participationStatus: ParticipationStatus.LOCKED_IN,
+          isCaptain: index === 0,
+        };
+      }),
+      result: null,
+    });
+    prismaService.inhousePlayerStat.findMany.mockResolvedValue([]);
+
+    const response = await service.getMatch('viewer1', 'm1');
+
+    expect(response.canSubmitResult).toBe(true);
+    expect(response.resultInputBlockedReason).toBeNull();
+    expect(response.mvpCandidates).toHaveLength(10);
+    expect(response.laneResultTargets).toHaveLength(10);
+    expect(response.laneResultTargets?.filter((target) => target.teamSide === 'A').map((target) => target.assignedRole)).toEqual(roles);
+    expect(response.laneResultTargets?.filter((target) => target.teamSide === 'B').map((target) => target.assignedRole)).toEqual(roles);
   });
 
   it('persists a manual balance and returns the saved match snapshot', async () => {

@@ -1,10 +1,12 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
-import { MatchStatus, Position, ResultStatus, TeamSide } from '@prisma/client';
+import { BadRequestException, HttpStatus, Injectable, Logger, Optional } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { MatchStatus, ParticipationStatus, Position, ResultStatus, TeamSide } from '@prisma/client';
 
+import { AppErrorCode, AppException } from '../common/app.exception';
+import { toPrismaJson } from '../common/prisma-json.util';
 import { MatchesService } from '../matches/matches.service';
 import { PowerService } from '../power/power.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { toPrismaJson } from '../common/prisma-json.util';
 import {
   AutoBalanceDto,
   BalancePreviewDto,
@@ -20,6 +22,8 @@ import {
 
 @Injectable()
 export class MatchmakingService {
+  private readonly logger = new Logger(MatchmakingService.name);
+  private readonly groupLiveLogger = new Logger('GroupLiveDebug');
   private readonly recentHistoryWindow = 8;
 
   constructor(
@@ -27,6 +31,7 @@ export class MatchmakingService {
     private readonly matchesService: MatchesService,
     private readonly powerService: PowerService,
     private readonly algorithmService: MatchmakingAlgorithmService,
+    @Optional() private readonly configService?: ConfigService,
   ) {}
 
   async autoBalance(
@@ -135,13 +140,43 @@ export class MatchmakingService {
     },
   ): Promise<MatchmakingCandidatesResponseDto> {
     const match = await this.matchesService.getMatchWithPlayers(matchId);
+    const seededParticipantsIncluded = match.players.some((player) =>
+      this.isSeededTestParticipant(player.user?.email ?? null, player.user?.powerProfile?.breakdownJson),
+    );
+
+    this.groupLiveLogger.log(
+      `[GroupLiveDebug] groupId=${match.groupId} memberCount=${match.players.length} source=live seededParticipantsIncluded=${seededParticipantsIncluded}`,
+    );
 
     if (match.players.length !== 10) {
-      throw new BadRequestException('Auto-balance requires exactly 10 players.');
+      const diagnostics = this.buildMatchmakingDiagnostics(
+        match,
+        new Map(),
+        lockedPlayerIds,
+      );
+      this.logAutoBalanceFailure(matchId, diagnostics);
+      throw this.createAutoBalanceException(
+        '자동 팀 생성은 참가자 10명이 필요해요.',
+        diagnostics,
+      );
     }
 
     const userIds = match.players.map((player) => player.userId);
     const powerMap = await this.powerService.getPowerMapForUsers(userIds);
+    const diagnostics = this.buildMatchmakingDiagnostics(
+      match,
+      powerMap,
+      lockedPlayerIds,
+    );
+
+    if (!diagnostics.isReady) {
+      this.logAutoBalanceFailure(matchId, diagnostics);
+      throw this.createAutoBalanceException(
+        '자동 팀 생성을 시작할 수 없어요. 참가자 상태를 확인해주세요.',
+        diagnostics,
+      );
+    }
+
     const historyContext = await this.buildMatchHistoryContext(
       match.groupId,
       matchId,
@@ -170,8 +205,20 @@ export class MatchmakingService {
     );
 
     if (candidates.length === 0) {
-      throw new BadRequestException(
-        'No valid team split was found. Check locked players and position coverage.',
+      const failureDiagnostics = {
+        ...diagnostics,
+        failureReason: this.resolveCandidateFailureReason(
+          players,
+          excludedCandidateIds,
+          historyContext,
+          options,
+          lockedPlayerIds,
+        ),
+      };
+      this.logAutoBalanceFailure(matchId, failureDiagnostics);
+      throw this.createAutoBalanceException(
+        '추천 조합을 만들 수 없어요. 참가자와 포지션 정보를 확인해주세요.',
+        failureDiagnostics,
       );
     }
 
@@ -183,7 +230,203 @@ export class MatchmakingService {
       },
     });
 
-    return { candidates };
+    return {
+      candidates,
+      ...(this.isDebugRuntime()
+        ? {
+            meta: this.toMatchmakingMeta(diagnostics),
+            debug: {
+              history: historyContext,
+              excludedCandidateIds,
+              excludedCombinationKeys: options.excludedCombinationKeys,
+            },
+          }
+        : {}),
+    };
+  }
+
+  private buildMatchmakingDiagnostics(
+    match: Awaited<ReturnType<MatchesService['getMatchWithPlayers']>>,
+    powerMap: Map<string, { overallPower: number; lanePower: Record<string, number> }>,
+    lockedPlayerIds: string[],
+  ) {
+    const userIds = match.players.map((player) => player.userId);
+    const acceptedPlayerCount = match.players.filter(
+      (player) =>
+        player.participationStatus === ParticipationStatus.ACCEPTED ||
+        player.participationStatus === ParticipationStatus.LOCKED_IN,
+    ).length;
+    const duplicateUserIds = [...new Set(
+      userIds.filter((userId, index) => userIds.indexOf(userId) !== index),
+    )];
+    const matchUserIdSet = new Set(userIds);
+    const lockedPlayerIdsNotInMatch = lockedPlayerIds.filter(
+      (userId) => !matchUserIdSet.has(userId),
+    );
+    const lockedPlayersMissingAssignment = match.players
+      .filter(
+        (player) =>
+          lockedPlayerIds.includes(player.userId) &&
+          (!player.teamSide || !player.assignedRole),
+      )
+      .map((player) => player.userId);
+    const missingPowerProfileUserIds = match.players
+      .filter((player) => !powerMap.has(player.userId))
+      .map((player) => player.userId);
+    const missingPrimaryPositionUserIds = match.players
+      .filter((player) => !player.user.primaryPosition)
+      .map((player) => player.userId);
+    const positionCoverage = this.buildPositionCoverage(match.players);
+    const blockingReasons = [
+      ...(match.players.length !== 10 ? ['PLAYER_COUNT_NOT_10'] : []),
+      ...(acceptedPlayerCount !== 10 ? ['PARTICIPANTS_NOT_ACCEPTED'] : []),
+      ...(duplicateUserIds.length > 0 ? ['DUPLICATE_PLAYERS'] : []),
+      ...(lockedPlayerIdsNotInMatch.length > 0 ? ['LOCKED_PLAYER_NOT_FOUND'] : []),
+      ...(lockedPlayersMissingAssignment.length > 0
+        ? ['LOCKED_PLAYER_ASSIGNMENT_MISSING']
+        : []),
+    ];
+
+    return {
+      isReady: blockingReasons.length === 0,
+      blockingReasons,
+      requiredPlayerCount: 10,
+      playerCount: match.players.length,
+      acceptedPlayerCount,
+      duplicateUserIds,
+      lockedPlayerIds,
+      lockedPlayerIdsNotInMatch,
+      lockedPlayersMissingAssignment,
+      missingPowerProfileUserIds,
+      missingPrimaryPositionUserIds,
+      positionCoverage,
+    };
+  }
+
+  private buildPositionCoverage(
+    players: Awaited<ReturnType<MatchesService['getMatchWithPlayers']>>['players'],
+  ): Record<string, { primary: number; secondary: number; fillAvailable: number }> {
+    return [
+      Position.TOP,
+      Position.JUNGLE,
+      Position.MID,
+      Position.ADC,
+      Position.SUPPORT,
+    ].reduce<Record<string, { primary: number; secondary: number; fillAvailable: number }>>(
+      (acc, role) => {
+        acc[role] = {
+          primary: players.filter((player) => player.user.primaryPosition === role).length,
+          secondary: players.filter((player) => player.user.secondaryPosition === role).length,
+          fillAvailable: players.filter((player) => player.user.isFillAvailable).length,
+        };
+        return acc;
+      },
+      {},
+    );
+  }
+
+  private resolveCandidateFailureReason(
+    players: AlgorithmPlayer[],
+    excludedCandidateIds: string[],
+    historyContext: MatchHistoryContext,
+    options: {
+      excludedCombinationKeys: string[];
+      tiebreakSeed: string | null;
+    },
+    lockedPlayerIds: string[],
+  ): string {
+    const withoutExclusions = this.algorithmService.generateCandidates(
+      players,
+      [],
+      historyContext,
+      {
+        excludedCombinationKeys: [],
+        tiebreakSeed: options.tiebreakSeed,
+      },
+    );
+
+    if (
+      withoutExclusions.length > 0 &&
+      (excludedCandidateIds.length > 0 || options.excludedCombinationKeys.length > 0)
+    ) {
+      return 'ALL_CANDIDATES_EXCLUDED';
+    }
+
+    if (lockedPlayerIds.length > 0) {
+      const unlockedPlayers = players.map((player) => ({
+        ...player,
+        lockedTeamSide: null,
+        lockedRole: null,
+      }));
+      const unlockedCandidates = this.algorithmService.generateCandidates(
+        unlockedPlayers,
+        [],
+        historyContext,
+        {
+          excludedCombinationKeys: [],
+          tiebreakSeed: options.tiebreakSeed,
+        },
+      );
+
+      if (unlockedCandidates.length > 0) {
+        return 'LOCKED_ASSIGNMENT_CONFLICT';
+      }
+    }
+
+    return 'NO_VALID_ROLE_ASSIGNMENT';
+  }
+
+  private createAutoBalanceException(
+    message: string,
+    diagnostics: Record<string, unknown>,
+  ): AppException {
+    return new AppException(
+      HttpStatus.BAD_REQUEST,
+      AppErrorCode.MATCH_BALANCE_INVALID,
+      message,
+      this.isDebugRuntime()
+        ? {
+            ...this.toMatchmakingMeta(diagnostics),
+            debug: diagnostics,
+          }
+        : this.toMatchmakingMeta(diagnostics),
+    );
+  }
+
+  private toMatchmakingMeta(diagnostics: Record<string, unknown>): Record<string, unknown> {
+    return {
+      requiredPlayerCount: diagnostics.requiredPlayerCount,
+      playerCount: diagnostics.playerCount,
+      acceptedPlayerCount: diagnostics.acceptedPlayerCount,
+      blockingReasons: diagnostics.blockingReasons,
+      failureReason: diagnostics.failureReason ?? null,
+      missingPowerProfileCount: Array.isArray(diagnostics.missingPowerProfileUserIds)
+        ? diagnostics.missingPowerProfileUserIds.length
+        : 0,
+      missingPrimaryPositionCount: Array.isArray(diagnostics.missingPrimaryPositionUserIds)
+        ? diagnostics.missingPrimaryPositionUserIds.length
+        : 0,
+      positionCoverage: diagnostics.positionCoverage,
+    };
+  }
+
+  private logAutoBalanceFailure(
+    matchId: string,
+    diagnostics: Record<string, unknown>,
+  ): void {
+    this.logger.warn(
+      `auto_balance_unavailable ${JSON.stringify({
+        matchId,
+        ...this.toMatchmakingMeta(diagnostics),
+      })}`,
+    );
+  }
+
+  private isDebugRuntime(): boolean {
+    const nodeEnv = (this.configService?.get<string>('NODE_ENV') ?? process.env.NODE_ENV ?? 'development').toLowerCase();
+    const appEnv = (this.configService?.get<string>('APP_ENV') ?? process.env.APP_ENV ?? '').toLowerCase();
+
+    return nodeEnv === 'development' || nodeEnv === 'test' || appEnv === 'local' || appEnv === 'test' || appEnv === 'development';
   }
 
   private defaultLanePower(overallPower: number): Record<string, number> {
@@ -217,6 +460,30 @@ export class MatchmakingService {
 
   private toStringArray(value: unknown): string[] {
     return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+  }
+
+  private isSeededTestParticipant(
+    email: string | null,
+    breakdownJson: unknown,
+  ): boolean {
+    const normalizedEmail = email?.trim().toLowerCase() ?? '';
+    if (
+      normalizedEmail.startsWith('dev_mock_') ||
+      normalizedEmail.endsWith('@inhouse.local')
+    ) {
+      return true;
+    }
+
+    const breakdown =
+      breakdownJson && typeof breakdownJson === 'object'
+        ? (breakdownJson as Record<string, unknown>)
+        : null;
+    const inhouse =
+      breakdown?.inhouse && typeof breakdown.inhouse === 'object'
+        ? (breakdown.inhouse as Record<string, unknown>)
+        : null;
+
+    return inhouse?.source === 'dev_group_fill';
   }
 
   private async buildMatchHistoryContext(

@@ -7,6 +7,8 @@ import { AuthenticatedUser } from '../common/interfaces/authenticated-request.in
 import {
   InhouseHistoryQueryDto,
   InhouseHistoryResponseDto,
+  InviteUserSearchQueryDto,
+  InviteUserSearchResponseDto,
   MeResponseDto,
   UserProfileResponseDto,
   UserStatsQueryDto,
@@ -26,6 +28,26 @@ export class UsersController {
   @ApiOkResponse({ type: MeResponseDto })
   getMe(@CurrentUser() user: AuthenticatedUser): Promise<MeResponseDto> {
     return this.usersService.getMe(user.userId);
+  }
+
+  @Get('search')
+  @ApiOperation({ summary: 'Search users for invite flows.' })
+  @ApiOkResponse({ type: InviteUserSearchResponseDto })
+  searchUsers(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: InviteUserSearchQueryDto,
+  ): Promise<InviteUserSearchResponseDto> {
+    return this.usersService.searchInviteUsers(user.userId, query);
+  }
+
+  @Get()
+  @ApiOperation({ summary: 'Search users for invite flows (legacy alias).' })
+  @ApiOkResponse({ type: InviteUserSearchResponseDto })
+  searchUsersLegacy(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: InviteUserSearchQueryDto,
+  ): Promise<InviteUserSearchResponseDto> {
+    return this.usersService.searchInviteUsers(user.userId, query);
   }
 
   @Get(':userId/profile')

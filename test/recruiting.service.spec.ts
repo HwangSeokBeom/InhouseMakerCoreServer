@@ -698,7 +698,11 @@ describe('RecruitingService', () => {
   });
 
   it('returns 404 with archived reason when creating a recruiting post for a deleted group', async () => {
-    const actualGroupsService = new GroupsService(prismaService, auditLogService);
+    const actualGroupsService = new GroupsService(
+      prismaService,
+      auditLogService,
+      { findInviteUsers: jest.fn() } as any,
+    );
     const recruitingService = new RecruitingService(
       prismaService,
       actualGroupsService,
@@ -745,7 +749,11 @@ describe('RecruitingService', () => {
   });
 
   it('distinguishes missing, archived, and unauthorized group failures when creating a recruiting post', async () => {
-    const actualGroupsService = new GroupsService(prismaService, auditLogService);
+    const actualGroupsService = new GroupsService(
+      prismaService,
+      auditLogService,
+      { findInviteUsers: jest.fn() } as any,
+    );
     const recruitingService = new RecruitingService(
       prismaService,
       actualGroupsService,

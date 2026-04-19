@@ -128,6 +128,18 @@ class GroupMemberDto {
   @ApiProperty({ nullable: true, required: false })
   recentPower!: number | null;
 
+  @ApiPropertyOptional({ nullable: true, required: false })
+  riotDisplayName!: string | null;
+
+  @ApiProperty()
+  isSelf!: boolean;
+
+  @ApiProperty()
+  isAlreadyMember!: boolean;
+
+  @ApiProperty()
+  isEligible!: boolean;
+
   @ApiProperty()
   profileVisible!: boolean;
 
@@ -167,8 +179,26 @@ class GroupMemberInviteCandidateDto {
   @ApiProperty()
   nickname!: string;
 
+  @ApiPropertyOptional({ enum: Position, nullable: true, required: false })
+  primaryPosition!: Position | null;
+
+  @ApiPropertyOptional({ enum: Position, nullable: true, required: false })
+  mainPosition!: Position | null;
+
+  @ApiPropertyOptional({ enum: Position, nullable: true, required: false })
+  secondaryPosition!: Position | null;
+
   @ApiPropertyOptional({ nullable: true })
   profileImageUrl!: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  riotDisplayName!: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  riotGameName!: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  tagLine!: string | null;
 
   @ApiPropertyOptional({
     type: GroupMemberInviteCandidateRiotAccountDto,
@@ -184,6 +214,15 @@ class GroupMemberInviteCandidateDto {
 
   @ApiProperty()
   alreadyMember!: boolean;
+
+  @ApiProperty()
+  isSelf!: boolean;
+
+  @ApiProperty()
+  isAlreadyMember!: boolean;
+
+  @ApiProperty()
+  isEligible!: boolean;
 
   @ApiPropertyOptional({ enum: GroupRole, nullable: true })
   memberRole!: GroupRole | null;

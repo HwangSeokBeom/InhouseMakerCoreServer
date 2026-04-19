@@ -15,6 +15,7 @@ import {
 
 import { AuditLogService } from '../common/audit-log.service';
 import { AppErrorCode, AppException } from '../common/app.exception';
+import { buildMissingResourceDebugDetails } from '../common/request-debug.util';
 import { GroupsService } from '../groups/groups.service';
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -660,9 +661,7 @@ export class MatchesService {
         HttpStatus.NOT_FOUND,
         options.notFoundCode ?? AppErrorCode.MATCH_NOT_FOUND,
         'Match not found.',
-        {
-          matchId,
-        },
+        buildMissingResourceDebugDetails('matchId', matchId),
       );
     }
 
@@ -713,6 +712,7 @@ export class MatchesService {
             user: {
               select: {
                 id: true,
+                email: true,
                 nickname: true,
                 primaryPosition: true,
                 secondaryPosition: true,
@@ -721,6 +721,7 @@ export class MatchesService {
                   select: {
                     overallPower: true,
                     lanePowerJson: true,
+                    breakdownJson: true,
                     calculatedAt: true,
                     version: true,
                   },
@@ -739,9 +740,7 @@ export class MatchesService {
         HttpStatus.NOT_FOUND,
         notFoundCode,
         'Match not found.',
-        {
-          matchId,
-        },
+        buildMissingResourceDebugDetails('matchId', matchId),
       );
     }
 
@@ -841,6 +840,7 @@ export class MatchesService {
     );
     const blueTeamPlayers = players.filter((player) => player.teamSide === TeamSide.A);
     const redTeamPlayers = players.filter((player) => player.teamSide === TeamSide.B);
+    const resultInput = this.toResultInputState(match, players);
 
     return {
       id: match.id,
@@ -868,6 +868,10 @@ export class MatchesService {
       candidates: match.candidatesJson ?? null,
       manualBalance,
       rematchInput: this.toRematchInputResponse(match),
+      canSubmitResult: resultInput.canSubmitResult,
+      resultInputBlockedReason: resultInput.resultInputBlockedReason,
+      mvpCandidates: resultInput.mvpCandidates,
+      laneResultTargets: resultInput.laneResultTargets,
     };
   }
 
@@ -952,6 +956,73 @@ export class MatchesService {
       confirmedAt: match.result.confirmedAt?.toISOString() ?? null,
       adminResolvedAt: match.result.adminResolvedAt?.toISOString() ?? null,
       playerStatsCount: stats.length,
+    };
+  }
+
+  private toResultInputState(
+    match: Awaited<ReturnType<MatchesService['getMatchWithPlayers']>>,
+    players: MatchResponseDto['players'],
+  ): {
+    canSubmitResult: boolean;
+    resultInputBlockedReason: string | null;
+    mvpCandidates: NonNullable<MatchResponseDto['mvpCandidates']>;
+    laneResultTargets: NonNullable<MatchResponseDto['laneResultTargets']>;
+  } {
+    const assignedPlayers = players
+      .filter(
+        (
+          player,
+        ): player is MatchResponseDto['players'][number] & {
+          teamSide: TeamSide;
+          assignedRole: Position;
+        } =>
+          player.teamSide !== null && player.assignedRole !== null,
+      )
+      .sort(
+        (left, right) =>
+          this.getTeamSortIndex(left.teamSide) - this.getTeamSortIndex(right.teamSide) ||
+          this.getRoleSortIndex(left.assignedRole) - this.getRoleSortIndex(right.assignedRole) ||
+          left.nickname.localeCompare(right.nickname, 'ko'),
+      )
+      .map((player) => ({
+        userId: player.userId,
+        nickname: player.nickname,
+        teamSide: player.teamSide,
+        assignedRole: player.assignedRole,
+      }));
+
+    const hasTenPlayers = players.length === 10;
+    const hasAllAssignments = assignedPlayers.length === players.length;
+    const hasCompleteLaneTargets = [TeamSide.A, TeamSide.B].every((teamSide) => {
+      const roleSet = new Set(
+        assignedPlayers
+          .filter((player) => player.teamSide === teamSide)
+          .map((player) => player.assignedRole),
+      );
+
+      return (
+        assignedPlayers.filter((player) => player.teamSide === teamSide).length === 5 &&
+        [Position.TOP, Position.JUNGLE, Position.MID, Position.ADC, Position.SUPPORT].every(
+          (role) => roleSet.has(role),
+        )
+      );
+    });
+    const isFinalized = match.result?.resultStatus === ResultStatus.CONFIRMED;
+    const resultInputBlockedReason = !hasTenPlayers
+      ? 'PLAYER_COUNT_NOT_10'
+      : !hasAllAssignments
+        ? 'TEAM_OR_ROLE_MISSING'
+        : !hasCompleteLaneTargets
+          ? 'LANE_TARGETS_INCOMPLETE'
+          : isFinalized
+            ? 'RESULT_ALREADY_FINALIZED'
+            : null;
+
+    return {
+      canSubmitResult: resultInputBlockedReason === null,
+      resultInputBlockedReason,
+      mvpCandidates: assignedPlayers,
+      laneResultTargets: assignedPlayers,
     };
   }
 
@@ -1273,6 +1344,18 @@ export class MatchesService {
 
     const index = this.roleOrder.indexOf(role);
     return index >= 0 ? index : Number.MAX_SAFE_INTEGER;
+  }
+
+  private getTeamSortIndex(teamSide: TeamSide | null): number {
+    if (teamSide === TeamSide.A) {
+      return 0;
+    }
+
+    if (teamSide === TeamSide.B) {
+      return 1;
+    }
+
+    return Number.MAX_SAFE_INTEGER;
   }
 
   private toStringArray(value: unknown): string[] {

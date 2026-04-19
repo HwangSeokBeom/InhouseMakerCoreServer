@@ -96,7 +96,11 @@ describe('Stats calculations', () => {
       },
     } as any;
 
-    const service = new GroupsService(prismaService, { create: jest.fn() } as any);
+    const service = new GroupsService(
+      prismaService,
+      { create: jest.fn() } as any,
+      { findInviteUsers: jest.fn() } as any,
+    );
     const result = await service.getLeaderboard('requester', 'group1', { limit: 10 });
 
     expect(result.items[0]).toEqual(

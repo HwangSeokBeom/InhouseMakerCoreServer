@@ -1,5 +1,5 @@
 import { ForbiddenException, NotFoundException } from '@nestjs/common';
-import { GroupRole, GroupVisibility, JoinPolicy, Position } from '@prisma/client';
+import { GroupRole, GroupVisibility, JoinPolicy, Position, Prisma } from '@prisma/client';
 
 import { AppException } from '../src/common/app.exception';
 import { GroupsService } from '../src/groups/groups.service';
@@ -28,6 +28,9 @@ describe('GroupsService', () => {
   const auditLogService = {
     create: jest.fn(),
   } as any;
+  const usersService = {
+    findInviteUsers: jest.fn(),
+  } as any;
 
   let service: GroupsService;
 
@@ -54,7 +57,7 @@ describe('GroupsService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    service = new GroupsService(prismaService, auditLogService);
+    service = new GroupsService(prismaService, auditLogService, usersService);
   });
 
   it('updates a group for its owner', async () => {
@@ -245,13 +248,16 @@ describe('GroupsService', () => {
       .mockImplementation(() => undefined);
 
     try {
-      await service.getGroup('owner1', 'missing-group');
+      await service.getGroup('owner1', 'group-ui-test');
       throw new Error('Expected missing group lookup to fail');
     } catch (error) {
       expect(error).toBeInstanceOf(AppException);
       expect(getExceptionBody(error)).toMatchObject({
         details: {
           reason: 'GROUP_NOT_FOUND',
+          groupId: 'group-ui-test',
+          probableCause: 'stale_client_reference',
+          fixtureHint: 'removed_fixture',
         },
       });
     }
@@ -285,7 +291,9 @@ describe('GroupsService', () => {
       expect(getExceptionBody(error)).toMatchObject({
         code: 'GROUP_ACCESS_FORBIDDEN',
         details: {
+          groupId: 'group1',
           reason: 'NOT_GROUP_MEMBER',
+          probableCause: 'not_member',
         },
       });
     }
@@ -476,6 +484,54 @@ describe('GroupsService', () => {
     expect(result).toEqual({ items: [] });
   });
 
+  it('maps group membership FK races back to USER_NOT_FOUND or GROUP_NOT_FOUND', async () => {
+    prismaService.inhouseGroup.findFirst.mockResolvedValue(
+      makeGroup({
+        members: [{ userId: 'leader1', role: GroupRole.OWNER }],
+      }),
+    );
+    prismaService.user.findUnique.mockResolvedValue({ id: 'target1' });
+    prismaService.groupMember.findUnique.mockResolvedValue(null);
+
+    const userForeignKeyError = new Error(
+      'Foreign key constraint failed on the field: `group_members_user_id_fkey`',
+    ) as any;
+    Object.setPrototypeOf(userForeignKeyError, Prisma.PrismaClientKnownRequestError.prototype);
+    userForeignKeyError.code = 'P2003';
+    userForeignKeyError.meta = { field_name: 'group_members_user_id_fkey' };
+
+    prismaService.groupMember.create.mockRejectedValueOnce(userForeignKeyError);
+
+    await expect(
+      service.addMember('leader1', 'group1', {
+        userId: 'target1',
+      }),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: 'USER_NOT_FOUND',
+      }),
+    });
+
+    const groupForeignKeyError = new Error(
+      'Foreign key constraint failed on the field: `group_members_group_id_fkey`',
+    ) as any;
+    Object.setPrototypeOf(groupForeignKeyError, Prisma.PrismaClientKnownRequestError.prototype);
+    groupForeignKeyError.code = 'P2003';
+    groupForeignKeyError.meta = { field_name: 'group_members_group_id_fkey' };
+
+    prismaService.groupMember.create.mockRejectedValueOnce(groupForeignKeyError);
+
+    await expect(
+      service.addMember('leader1', 'group1', {
+        userId: 'target1',
+      }),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: 'GROUP_NOT_FOUND',
+      }),
+    });
+  });
+
   it('includes capability flags on group detail for public non-members', async () => {
     prismaService.inhouseGroup.findFirst.mockResolvedValue(
       makeGroup({
@@ -505,38 +561,63 @@ describe('GroupsService', () => {
         members: [{ userId: 'leader1', role: GroupRole.OWNER }],
       }),
     );
-    prismaService.user.findMany.mockResolvedValue([
+    usersService.findInviteUsers.mockResolvedValue([
       {
         id: 'leader1',
+        userId: 'leader1',
         nickname: 'Leader',
         primaryPosition: null,
-        powerProfile: { overallPower: 72 },
-        riotAccounts: [],
-        groupMemberships: [{ role: GroupRole.OWNER }],
+        mainPosition: null,
+        secondaryPosition: null,
+        recentPower: 72,
+        riotDisplayName: null,
+        riotGameName: null,
+        tagLine: null,
+        region: null,
+        profileIconId: null,
+        summonerLevel: null,
+        profileImageUrl: null,
+        isSelf: true,
+        alreadyMember: true,
+        memberRole: GroupRole.OWNER,
       },
       {
         id: 'member1',
+        userId: 'member1',
         nickname: 'ExistingMember',
         primaryPosition: Position.MID,
-        powerProfile: { overallPower: 80 },
-        riotAccounts: [],
-        groupMemberships: [{ role: GroupRole.MEMBER }],
+        mainPosition: Position.MID,
+        secondaryPosition: Position.TOP,
+        recentPower: 80,
+        riotDisplayName: null,
+        riotGameName: null,
+        tagLine: null,
+        region: null,
+        profileIconId: null,
+        summonerLevel: null,
+        profileImageUrl: null,
+        isSelf: false,
+        alreadyMember: true,
+        memberRole: GroupRole.MEMBER,
       },
       {
         id: 'candidate1',
+        userId: 'candidate1',
         nickname: 'Candidate',
         primaryPosition: Position.SUPPORT,
-        powerProfile: { overallPower: 88 },
-        riotAccounts: [
-          {
-            riotGameName: 'Candidate',
-            tagLine: 'KR1',
-            region: 'kr',
-            profileIconId: 12,
-            summonerLevel: 300,
-          },
-        ],
-        groupMemberships: [],
+        mainPosition: Position.SUPPORT,
+        secondaryPosition: Position.ADC,
+        recentPower: 88,
+        riotDisplayName: 'Candidate#KR1',
+        riotGameName: 'Candidate',
+        tagLine: 'KR1',
+        region: 'kr',
+        profileIconId: 12,
+        summonerLevel: 300,
+        profileImageUrl: null,
+        isSelf: false,
+        alreadyMember: false,
+        memberRole: null,
       },
     ]);
 
@@ -565,6 +646,7 @@ describe('GroupsService', () => {
           selectable: true,
           inviteBlockedReason: null,
           representativePosition: Position.SUPPORT,
+          riotDisplayName: 'Candidate#KR1',
           riotAccountSummary: expect.objectContaining({
             gameName: 'Candidate',
             tagLine: 'KR1',

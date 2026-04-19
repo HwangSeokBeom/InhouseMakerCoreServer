@@ -16,6 +16,7 @@
     "prisma:migrate:deploy": "prisma migrate deploy",
     "prisma:seed": "prisma db seed",
     "prisma:seed:dev": "NODE_ENV=development DEV_SEED_ENABLED=true prisma db seed",
+    "analyze:test-member-seeds": "ts-node --project tsconfig.json scripts/analyze-test-member-seeds.ts",
     "smoke:dev-fixtures": "NODE_ENV=development ts-node --project tsconfig.json scripts/smoke-dev-fixtures.ts",
     "test": "jest --runInBand",
     "test:watch": "jest --watch",

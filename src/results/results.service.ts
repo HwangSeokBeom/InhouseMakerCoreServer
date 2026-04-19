@@ -1,6 +1,7 @@
 import {
   HttpStatus,
   Injectable,
+  Logger,
 } from '@nestjs/common';
 import {
   ConfirmationAction,
@@ -37,6 +38,19 @@ import { ResultConfirmationPolicyService } from './result-confirmation-policy.se
 
 @Injectable()
 export class ResultsService {
+  private readonly historyWriteLogger = new Logger('HistoryWriteDebug');
+  private readonly historyConsistencyLogger = new Logger('HistoryConsistencyDebug');
+  private readonly historyVisibleMatchStatuses: MatchStatus[] = [
+    MatchStatus.RESULT_PENDING,
+    MatchStatus.CONFIRMED,
+    MatchStatus.CLOSED,
+    MatchStatus.DISPUTED,
+  ];
+  private readonly joinedParticipationStatuses: ParticipationStatus[] = [
+    ParticipationStatus.ACCEPTED,
+    ParticipationStatus.LOCKED_IN,
+  ];
+
   constructor(
     private readonly prismaService: PrismaService,
     private readonly matchesService: MatchesService,
@@ -110,6 +124,10 @@ export class ResultsService {
     dto: QuickResultDto,
     idempotencyKey?: string,
   ): Promise<ResultSubmissionResponseDto> {
+    this.historyWriteLogger.log(
+      `[HistoryWriteDebug] action=result_submit_start matchId=${matchId} requesterUserId=${requesterUserId}`,
+    );
+
     await this.matchesService.assertMatchHostOrCaptain(matchId, requesterUserId, {
       forbiddenCode: AppErrorCode.RESULT_SAVE_FORBIDDEN,
       forbiddenMessage:
@@ -118,22 +136,13 @@ export class ResultsService {
     const match = await this.matchesService.getMatchWithPlayers(matchId);
     const balanceFeeling = this.resolveBalanceFeeling(dto);
 
-    if (dto.players.length !== match.players.length) {
-      throw new AppException(
-        HttpStatus.BAD_REQUEST,
-        AppErrorCode.INVALID_REQUEST,
-        'Result input must include all current match players.',
-        {
-          matchId,
-          inputPlayerCount: dto.players.length,
-          expectedPlayerCount: match.players.length,
-        },
-      );
-    }
-
     const existingResult = await this.prismaService.inhouseMatchResult.findUnique({
       where: { matchId },
     });
+
+    this.historyWriteLogger.log(
+      `[HistoryWriteDebug] action=result_submit_before_state matchId=${matchId} matchStatus=${match.status} resultStatus=${existingResult?.resultStatus ?? match.result?.resultStatus ?? null} playedAt=${this.resolveHistoryPlayedAt(match.scheduledAt, existingResult ?? match.result ?? null)}`,
+    );
 
     if (existingResult?.idempotencyKey && existingResult.idempotencyKey === idempotencyKey) {
       return this.buildSubmissionResponse(existingResult, match.players.length);
@@ -150,6 +159,8 @@ export class ResultsService {
         },
       );
     }
+
+    this.assertQuickResultInputReady(match, dto);
 
     const payloadJson = {
       winningTeam: dto.winningTeam,
@@ -245,6 +256,19 @@ export class ResultsService {
 
       return savedResult;
     });
+
+    this.historyWriteLogger.log(
+      `[HistoryWriteDebug] action=result_submit_after_state matchId=${matchId} matchStatus=${MatchStatus.RESULT_PENDING} resultStatus=${result.resultStatus} playedAt=${this.resolveHistoryPlayedAt(match.scheduledAt, result)} affectedParticipants=${dto.players.length}`,
+    );
+    this.historyWriteLogger.log(
+      `[HistoryWriteDebug] action=result_submit_commit_success matchId=${matchId}`,
+    );
+    this.logHistoryConsistencyForSubmittedResult(
+      match,
+      MatchStatus.RESULT_PENDING,
+      result,
+      dto.players.map((player) => player.userId),
+    );
 
     await this.auditLogService.create({
       userId: requesterUserId,
@@ -489,7 +513,7 @@ export class ResultsService {
       throw new AppException(
         HttpStatus.BAD_REQUEST,
         AppErrorCode.INVALID_REQUEST,
-        'MVP user must be one of the current match players.',
+      'MVP user must be one of the current match players.',
         {
           matchId,
           resultId,
@@ -913,6 +937,225 @@ export class ResultsService {
     }
 
     return this.resolveBalanceFeeling(dto);
+  }
+
+  private assertQuickResultInputReady(
+    match: Awaited<ReturnType<MatchesService['getMatchWithPlayers']>>,
+    dto: QuickResultDto,
+  ): void {
+    if (dto.players.length !== match.players.length) {
+      throw new AppException(
+        HttpStatus.BAD_REQUEST,
+        AppErrorCode.INVALID_REQUEST,
+        'Result input must include all current match players.',
+        {
+          matchId: match.id,
+          field: 'players',
+          inputPlayerCount: dto.players.length,
+          expectedPlayerCount: match.players.length,
+        },
+      );
+    }
+
+    const inputUserIds = dto.players.map((player) => player.userId);
+    const duplicateUserIds = [...new Set(
+      inputUserIds.filter((userId, index) => inputUserIds.indexOf(userId) !== index),
+    )];
+    if (duplicateUserIds.length > 0) {
+      throw new AppException(
+        HttpStatus.BAD_REQUEST,
+        AppErrorCode.INVALID_REQUEST,
+        'Result input contains duplicate players.',
+        {
+          matchId: match.id,
+          field: 'players',
+          duplicateUserIds,
+        },
+      );
+    }
+
+    const matchUserIds = new Set(match.players.map((player) => player.userId));
+    const inputUserIdSet = new Set(inputUserIds);
+    const unknownUserIds = inputUserIds.filter((userId) => !matchUserIds.has(userId));
+    const missingUserIds = match.players
+      .map((player) => player.userId)
+      .filter((userId) => !inputUserIdSet.has(userId));
+
+    if (unknownUserIds.length > 0 || missingUserIds.length > 0) {
+      throw new AppException(
+        HttpStatus.BAD_REQUEST,
+        AppErrorCode.INVALID_REQUEST,
+        'Result input must match the current match players.',
+        {
+          matchId: match.id,
+          field: 'players',
+          unknownUserIds,
+          missingUserIds,
+        },
+      );
+    }
+
+    if (!matchUserIds.has(dto.mvpUserId)) {
+      throw new AppException(
+        HttpStatus.BAD_REQUEST,
+        AppErrorCode.INVALID_REQUEST,
+        'MVP user must be one of the current match players.',
+        {
+          matchId: match.id,
+          field: 'mvpUserId',
+          mvpUserId: dto.mvpUserId,
+        },
+      );
+    }
+
+    const unassignedPlayerIds = match.players
+      .filter((player) => !player.teamSide || !player.assignedRole)
+      .map((player) => player.userId);
+
+    if (unassignedPlayerIds.length > 0) {
+      throw new AppException(
+        HttpStatus.BAD_REQUEST,
+        AppErrorCode.INVALID_REQUEST,
+        'Every result player must have an assigned team and role before saving.',
+        {
+          matchId: match.id,
+          field: 'players.assignedRole',
+          unassignedPlayerIds,
+        },
+      );
+    }
+
+    const incompleteTeams = [TeamSide.A, TeamSide.B]
+      .map((teamSide) => {
+        const players = match.players.filter((player) => player.teamSide === teamSide);
+        const roleSet = new Set(players.map((player) => player.assignedRole));
+        const missingRoles = [
+          Position.TOP,
+          Position.JUNGLE,
+          Position.MID,
+          Position.ADC,
+          Position.SUPPORT,
+        ].filter((role) => !roleSet.has(role));
+
+        return {
+          teamSide,
+          playerCount: players.length,
+          missingRoles,
+        };
+      })
+      .filter((team) => team.playerCount !== 5 || team.missingRoles.length > 0);
+
+    if (incompleteTeams.length > 0) {
+      throw new AppException(
+        HttpStatus.BAD_REQUEST,
+        AppErrorCode.INVALID_REQUEST,
+        'Result input requires five lane targets on each team.',
+        {
+          matchId: match.id,
+          field: 'players.laneResult',
+          incompleteTeams,
+        },
+      );
+    }
+  }
+
+  private logHistoryConsistencyForSubmittedResult(
+    match: Awaited<ReturnType<MatchesService['getMatchWithPlayers']>>,
+    matchStatus: MatchStatus,
+    result: {
+      confirmedAt?: Date | null;
+      updatedAt?: Date | null;
+    },
+    statUserIds: string[],
+  ): void {
+    const statUserIdSet = new Set(statUserIds);
+    const playedAt = this.resolveHistoryPlayedAt(match.scheduledAt, result);
+    const seededParticipantsIncluded = match.players.some((player) =>
+      this.isSeededTestParticipant(player.user?.email ?? null, player.user?.powerProfile?.breakdownJson),
+    );
+
+    this.historyConsistencyLogger.log(
+      `[HistoryConsistencyDebug] matchId=${match.id} source=live seededParticipantsIncluded=${seededParticipantsIncluded}`,
+    );
+
+    for (const player of match.players) {
+      const reason = this.resolveHistoryExclusionReason({
+        hasStat: statUserIdSet.has(player.userId),
+        matchStatus,
+        participationStatus: player.participationStatus,
+        playedAt,
+      });
+
+      this.historyConsistencyLogger.log(
+        reason === null
+          ? `[HistoryConsistencyDebug] matchId=${match.id} source=live includedInHistory=true userId=${player.userId}`
+          : `[HistoryConsistencyDebug] matchId=${match.id} source=live includedInHistory=false reason=${reason} userId=${player.userId}`,
+      );
+    }
+  }
+
+  private isSeededTestParticipant(
+    email: string | null,
+    breakdownJson: unknown,
+  ): boolean {
+    const normalizedEmail = email?.trim().toLowerCase() ?? '';
+    if (
+      normalizedEmail.startsWith('dev_mock_') ||
+      normalizedEmail.endsWith('@inhouse.local')
+    ) {
+      return true;
+    }
+
+    const breakdown =
+      breakdownJson && typeof breakdownJson === 'object'
+        ? (breakdownJson as Record<string, unknown>)
+        : null;
+    const inhouse =
+      breakdown?.inhouse && typeof breakdown.inhouse === 'object'
+        ? (breakdown.inhouse as Record<string, unknown>)
+        : null;
+
+    return inhouse?.source === 'dev_group_fill';
+  }
+
+  private resolveHistoryExclusionReason(params: {
+    hasStat: boolean;
+    matchStatus: MatchStatus;
+    participationStatus: ParticipationStatus;
+    playedAt: string | null;
+  }): 'match_not_completed' | 'user_participation_not_joined' | 'playedAt_null' | 'missingProjection' | null {
+    if (!this.historyVisibleMatchStatuses.includes(params.matchStatus)) {
+      return 'match_not_completed';
+    }
+
+    if (!params.hasStat && !this.joinedParticipationStatuses.includes(params.participationStatus)) {
+      return 'user_participation_not_joined';
+    }
+
+    if (params.playedAt === null) {
+      return 'playedAt_null';
+    }
+
+    if (!params.hasStat) {
+      return 'missingProjection';
+    }
+
+    return null;
+  }
+
+  private resolveHistoryPlayedAt(
+    scheduledAt: Date | null,
+    result: {
+      confirmedAt?: Date | null;
+      updatedAt?: Date | null;
+    } | null,
+  ): string | null {
+    return (
+      result?.confirmedAt?.toISOString() ??
+      result?.updatedAt?.toISOString() ??
+      scheduledAt?.toISOString() ??
+      null
+    );
   }
 
   private extractProposedWinningTeam(

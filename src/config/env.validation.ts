@@ -3,6 +3,7 @@ import * as Joi from 'joi';
 export interface AppConfig {
   PORT: number;
   NODE_ENV: string;
+  APP_ENV?: string;
   DATABASE_URL: string;
   REDIS_URL: string;
   JWT_ACCESS_SECRET: string;
@@ -25,6 +26,9 @@ export interface AppConfig {
 export const envValidationSchema = Joi.object<AppConfig>({
   PORT: Joi.number().default(3000),
   NODE_ENV: Joi.string().valid('development', 'test', 'production').default('development'),
+  APP_ENV: Joi.string()
+    .valid('local', 'development', 'test', 'staging', 'production')
+    .optional(),
   DATABASE_URL: Joi.string().uri({ scheme: ['postgresql', 'postgres'] }).required(),
   REDIS_URL: Joi.string().uri({ scheme: ['redis', 'rediss'] }).required(),
   JWT_ACCESS_SECRET: Joi.string().min(8).required(),

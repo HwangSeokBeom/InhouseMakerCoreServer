@@ -1,5 +1,11 @@
-import { HttpStatus, Injectable } from '@nestjs/common';
-import { MatchStatus, ResultStatus } from '@prisma/client';
+import { HttpStatus, Injectable, Logger } from '@nestjs/common';
+import {
+  GroupRole,
+  MatchStatus,
+  ParticipationStatus,
+  ResultStatus,
+  UserStatus,
+} from '@prisma/client';
 
 import { AppErrorCode, AppException } from '../common/app.exception';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-request.interface';
@@ -7,6 +13,9 @@ import { PrismaService } from '../prisma/prisma.service';
 import {
   InhouseHistoryQueryDto,
   InhouseHistoryResponseDto,
+  InviteUserSearchItemDto,
+  InviteUserSearchQueryDto,
+  InviteUserSearchResponseDto,
   MeResponseDto,
   UserProfileResponseDto,
   UserStatsQueryDto,
@@ -16,6 +25,24 @@ import {
 
 @Injectable()
 export class UsersService {
+  private readonly historyReadLogger = new Logger('HistoryReadDebug');
+  private readonly historyConsistencyLogger = new Logger('HistoryConsistencyDebug');
+  private readonly historyVisibleMatchStatuses: MatchStatus[] = [
+    MatchStatus.RESULT_PENDING,
+    MatchStatus.CONFIRMED,
+    MatchStatus.CLOSED,
+    MatchStatus.DISPUTED,
+  ];
+  private readonly completedHistoryMatchStatuses: MatchStatus[] = [
+    MatchStatus.CONFIRMED,
+    MatchStatus.CLOSED,
+    MatchStatus.DISPUTED,
+  ];
+  private readonly joinedParticipationStatuses: ParticipationStatus[] = [
+    ParticipationStatus.ACCEPTED,
+    ParticipationStatus.LOCKED_IN,
+  ];
+
   constructor(private readonly prismaService: PrismaService) {}
 
   async getMe(userId: string): Promise<MeResponseDto> {
@@ -112,6 +139,18 @@ export class UsersService {
     };
   }
 
+  async searchInviteUsers(
+    requesterUserId: string,
+    query: InviteUserSearchQueryDto,
+  ): Promise<InviteUserSearchResponseDto> {
+    const items = await this.findInviteUsers(requesterUserId, query, {
+      groupId: query.groupId,
+      excludeExistingMembers: query.excludeExistingMembers,
+    });
+
+    return { items };
+  }
+
   async getInhouseHistory(
     currentUser: AuthenticatedUser,
     targetUserId: string,
@@ -123,20 +162,39 @@ export class UsersService {
       query.groupId,
     );
 
+    const limit = query.limit ?? 20;
+    const matchConditions = {
+      ...(query.groupId ? { groupId: query.groupId } : {}),
+      status: {
+        in: this.historyVisibleMatchStatuses,
+      },
+    };
+    const loggedConditions = {
+      source: 'inhouse_player_stats',
+      userId: targetUserId,
+      groupId: query.groupId ?? null,
+      matchStatusIn: this.historyVisibleMatchStatuses,
+      resultStatus: 'not_filtered',
+      playedAt: 'not_filtered',
+      requiredProjection: 'inhouse_player_stats row for userId + matchId',
+    };
+
+    this.historyReadLogger.log(
+      `[HistoryReadDebug] action=query_start userId=${targetUserId} limit=${limit}`,
+    );
+    this.historyReadLogger.log(
+      `[HistoryReadDebug] action=query_conditions userId=${targetUserId} conditions=${JSON.stringify(loggedConditions)}`,
+    );
+
     const stats = await this.prismaService.inhousePlayerStat.findMany({
       where: {
         userId: targetUserId,
-        match: {
-          ...(query.groupId ? { groupId: query.groupId } : {}),
-          status: {
-            in: [MatchStatus.CONFIRMED, MatchStatus.CLOSED, MatchStatus.DISPUTED],
-          },
-        },
+        match: matchConditions,
       },
       orderBy: {
         createdAt: 'desc',
       },
-      take: query.limit ?? 20,
+      take: limit,
       include: {
         match: {
           include: {
@@ -151,6 +209,28 @@ export class UsersService {
         },
       },
     });
+
+    this.historyReadLogger.log(
+      `[HistoryReadDebug] action=query_result userId=${targetUserId} itemCount=${stats.length}`,
+    );
+
+    if (stats.length === 0) {
+      await this.logHistoryEmptyReason(targetUserId, query.groupId);
+    } else {
+      for (const stat of stats) {
+        const reason = this.resolveHistoryExclusionReason({
+          hasStat: true,
+          matchStatus: stat.match.status,
+          playedAt: this.resolveHistoryPlayedAt(stat),
+        });
+
+        this.historyConsistencyLogger.log(
+          reason === null
+            ? `[HistoryConsistencyDebug] matchId=${stat.matchId} source=live includedInHistory=true userId=${targetUserId}`
+            : `[HistoryConsistencyDebug] matchId=${stat.matchId} source=live includedInHistory=false reason=${reason} userId=${targetUserId}`,
+        );
+      }
+    }
 
     return {
       items: stats.map((stat) => {
@@ -181,6 +261,111 @@ export class UsersService {
         };
       }),
     };
+  }
+
+  private async logHistoryEmptyReason(
+    userId: string,
+    groupId?: string,
+  ): Promise<void> {
+    const groupCondition = groupId ? { groupId } : {};
+    const [matchedCompleted, matchedParticipants, missingProjection, pendingStats] =
+      await Promise.all([
+        this.prismaService.inhousePlayerStat.count({
+          where: {
+            userId,
+            match: {
+              ...groupCondition,
+              status: {
+                in: this.completedHistoryMatchStatuses,
+              },
+            },
+          },
+        }),
+        this.prismaService.inhouseMatchPlayer.count({
+          where: {
+            userId,
+            participationStatus: {
+              in: this.joinedParticipationStatuses,
+            },
+            match: {
+              ...groupCondition,
+              status: {
+                in: this.historyVisibleMatchStatuses,
+              },
+            },
+          },
+        }),
+        this.prismaService.inhouseMatchPlayer.count({
+          where: {
+            userId,
+            participationStatus: {
+              in: this.joinedParticipationStatuses,
+            },
+            match: {
+              ...groupCondition,
+              status: {
+                in: this.historyVisibleMatchStatuses,
+              },
+              playerStats: {
+                none: {
+                  userId,
+                },
+              },
+            },
+          },
+        }),
+        this.prismaService.inhousePlayerStat.count({
+          where: {
+            userId,
+            match: {
+              ...groupCondition,
+              status: MatchStatus.RESULT_PENDING,
+            },
+          },
+        }),
+      ]);
+
+    this.historyReadLogger.log(
+      `[HistoryReadDebug] action=query_empty_reason userId=${userId} matchedCompleted=${matchedCompleted} matchedParticipants=${matchedParticipants} missingProjection=${missingProjection} pendingStats=${pendingStats}`,
+    );
+  }
+
+  private resolveHistoryExclusionReason(params: {
+    hasStat: boolean;
+    matchStatus: MatchStatus;
+    playedAt: string | null;
+  }): 'match_not_completed' | 'playedAt_null' | 'missingProjection' | null {
+    if (!params.hasStat) {
+      return 'missingProjection';
+    }
+
+    if (!this.historyVisibleMatchStatuses.includes(params.matchStatus)) {
+      return 'match_not_completed';
+    }
+
+    if (params.playedAt === null) {
+      return 'playedAt_null';
+    }
+
+    return null;
+  }
+
+  private resolveHistoryPlayedAt(stat: {
+    createdAt: Date;
+    match: {
+      scheduledAt: Date | null;
+      result: {
+        confirmedAt?: Date | null;
+        updatedAt?: Date | null;
+      } | null;
+    };
+  }): string | null {
+    return (
+      stat.match.result?.confirmedAt?.toISOString() ??
+      stat.match.result?.updatedAt?.toISOString() ??
+      stat.match.scheduledAt?.toISOString() ??
+      stat.createdAt.toISOString()
+    );
   }
 
   async getUserStats(
@@ -326,8 +511,183 @@ export class UsersService {
     }
   }
 
+  async findInviteUsers(
+    requesterUserId: string,
+    query: Pick<InviteUserSearchQueryDto, 'query' | 'limit'>,
+    options: {
+      groupId?: string;
+      excludeExistingMembers?: boolean;
+    } = {},
+  ): Promise<InviteUserSearchItemDto[]> {
+    const normalizedQuery = query.query.trim();
+    const limit = query.limit ?? 20;
+    const fetchLimit = Math.min(Math.max(limit * 5, 50), 100);
+
+    const users = await this.prismaService.user.findMany({
+      where: {
+        status: UserStatus.ACTIVE,
+        nickname: {
+          contains: normalizedQuery,
+          mode: 'insensitive',
+        },
+        ...(options.groupId && options.excludeExistingMembers
+          ? {
+              groupMemberships: {
+                none: {
+                  groupId: options.groupId,
+                },
+              },
+            }
+          : {}),
+      },
+      select: {
+        id: true,
+        nickname: true,
+        primaryPosition: true,
+        secondaryPosition: true,
+        powerProfile: {
+          select: {
+            overallPower: true,
+          },
+        },
+        riotAccounts: {
+          where: {
+            isPrimary: true,
+          },
+          select: {
+            riotGameName: true,
+            tagLine: true,
+            region: true,
+            profileIconId: true,
+            summonerLevel: true,
+          },
+          take: 1,
+        },
+        ...(options.groupId
+          ? {
+              groupMemberships: {
+                where: {
+                  groupId: options.groupId,
+                },
+                select: {
+                  role: true,
+                },
+                take: 1,
+              },
+            }
+          : {}),
+      },
+      take: fetchLimit,
+    });
+
+    return users
+      .map((user) => {
+        const membership = 'groupMemberships' in user ? user.groupMemberships?.[0] ?? null : null;
+        const riotAccount = user.riotAccounts[0] ?? null;
+        const eligibility = this.resolveInviteEligibility(user.id === requesterUserId, membership !== null);
+        return {
+          id: user.id,
+          userId: user.id,
+          nickname: user.nickname,
+          primaryPosition: user.primaryPosition,
+          mainPosition: user.primaryPosition,
+          secondaryPosition: user.secondaryPosition,
+          recentPower: user.powerProfile?.overallPower ?? null,
+          riotDisplayName: this.buildRiotDisplayName(
+            riotAccount?.riotGameName ?? null,
+            riotAccount?.tagLine ?? null,
+          ),
+          riotGameName: riotAccount?.riotGameName ?? null,
+          tagLine: riotAccount?.tagLine ?? null,
+          region: riotAccount?.region ?? null,
+          profileIconId: riotAccount?.profileIconId ?? null,
+          summonerLevel: riotAccount?.summonerLevel ?? null,
+          profileImageUrl: null,
+          isSelf: eligibility.isSelf,
+          alreadyMember: options.groupId ? membership !== null : null,
+          isAlreadyMember: eligibility.isAlreadyMember,
+          isEligible: eligibility.isEligible,
+          inviteBlockedReason: eligibility.inviteBlockedReason,
+          memberRole: membership?.role ?? null,
+          matchRank: this.resolveInviteSearchRank(user.nickname, normalizedQuery),
+        };
+      })
+      .sort((left, right) => {
+        if (left.matchRank !== right.matchRank) {
+          return left.matchRank - right.matchRank;
+        }
+
+        return left.nickname.localeCompare(right.nickname, 'ko');
+      })
+      .slice(0, limit)
+      .map(({ matchRank: _matchRank, ...item }) => item);
+  }
+
   private parseStringArray(value: unknown): string[] {
     return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+  }
+
+  private buildRiotDisplayName(
+    riotGameName: string | null,
+    tagLine: string | null,
+  ): string | null {
+    const normalizedGameName = riotGameName?.trim();
+    if (!normalizedGameName) {
+      return null;
+    }
+
+    const normalizedTagLine = tagLine?.trim();
+    return normalizedTagLine ? `${normalizedGameName}#${normalizedTagLine}` : normalizedGameName;
+  }
+
+  private resolveInviteSearchRank(nickname: string, query: string): number {
+    const normalizedNickname = nickname.trim().toLocaleLowerCase();
+    const normalizedQuery = query.trim().toLocaleLowerCase();
+
+    if (normalizedNickname === normalizedQuery) {
+      return 0;
+    }
+
+    if (normalizedNickname.startsWith(normalizedQuery)) {
+      return 1;
+    }
+
+    return 2;
+  }
+
+  private resolveInviteEligibility(
+    isSelf: boolean,
+    isAlreadyMember: boolean,
+  ): {
+    isSelf: boolean;
+    isAlreadyMember: boolean;
+    isEligible: boolean;
+    inviteBlockedReason: string | null;
+  } {
+    if (isSelf) {
+      return {
+        isSelf,
+        isAlreadyMember,
+        isEligible: false,
+        inviteBlockedReason: 'CANNOT_ADD_SELF',
+      };
+    }
+
+    if (isAlreadyMember) {
+      return {
+        isSelf,
+        isAlreadyMember,
+        isEligible: false,
+        inviteBlockedReason: 'ALREADY_MEMBER',
+      };
+    }
+
+    return {
+      isSelf,
+      isAlreadyMember,
+      isEligible: true,
+      inviteBlockedReason: null,
+    };
   }
 
   private async resolveGroupRank(

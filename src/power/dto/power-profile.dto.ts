@@ -1,7 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Position } from '@prisma/client';
 
-class StyleScoresDto {
+export class PowerProfileStyleDto {
   @ApiProperty()
   stability!: number;
 
@@ -13,6 +13,12 @@ class StyleScoresDto {
 
   @ApiProperty()
   laneInfluence!: number;
+
+  @ApiProperty({ enum: Position })
+  roleFocus!: Position;
+
+  @ApiPropertyOptional({ required: false })
+  seeded?: boolean;
 }
 
 export class PowerProfileResponseDto {
@@ -25,8 +31,8 @@ export class PowerProfileResponseDto {
   @ApiProperty({ type: Object })
   lanePower!: Record<string, number>;
 
-  @ApiProperty({ type: StyleScoresDto })
-  style!: StyleScoresDto;
+  @ApiProperty({ type: PowerProfileStyleDto })
+  style!: PowerProfileStyleDto;
 
   @ApiProperty()
   basePower!: number;

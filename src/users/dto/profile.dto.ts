@@ -1,16 +1,21 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { MatchStatus, Position, ResultStatus, TeamSide, UserStatus } from '@prisma/client';
+import { GroupRole, MatchStatus, Position, ResultStatus, TeamSide, UserStatus } from '@prisma/client';
 import { Type } from 'class-transformer';
 import {
   IsArray,
   IsBoolean,
   IsEnum,
+  IsInt,
   IsNumber,
+  IsNotEmpty,
   IsOptional,
   IsString,
+  Max,
   MaxLength,
+  Min,
   MinLength,
 } from 'class-validator';
+import { Transform } from 'class-transformer';
 
 export class UpdateMyProfileDto {
   @ApiPropertyOptional({ enum: Position })
@@ -110,6 +115,116 @@ export class UserProfileResponseDto {
 
   @ApiProperty()
   noshowCount!: number;
+}
+
+export class InviteUserSearchQueryDto {
+  @ApiProperty()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(24)
+  query!: string;
+
+  @ApiPropertyOptional({ default: 20, minimum: 1, maximum: 50 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(50)
+  limit?: number = 20;
+
+  @ApiPropertyOptional({
+    description: 'Optional group scope to annotate or exclude existing members.',
+  })
+  @IsOptional()
+  @IsString()
+  groupId?: string;
+
+  @ApiPropertyOptional({
+    default: false,
+    description: 'When groupId is provided, exclude users who already belong to the group.',
+  })
+  @IsOptional()
+  @Transform(({ value }) => {
+    if (typeof value === 'boolean') {
+      return value;
+    }
+
+    if (typeof value === 'string') {
+      return value === 'true' || value === '1';
+    }
+
+    return value;
+  })
+  @IsBoolean()
+  excludeExistingMembers?: boolean = false;
+}
+
+export class InviteUserSearchItemDto {
+  @ApiProperty()
+  id!: string;
+
+  @ApiProperty()
+  userId!: string;
+
+  @ApiProperty()
+  nickname!: string;
+
+  @ApiPropertyOptional({ enum: Position, nullable: true, required: false })
+  primaryPosition!: Position | null;
+
+  @ApiPropertyOptional({ enum: Position, nullable: true, required: false })
+  mainPosition!: Position | null;
+
+  @ApiPropertyOptional({ enum: Position, nullable: true, required: false })
+  secondaryPosition!: Position | null;
+
+  @ApiProperty({ nullable: true, required: false })
+  recentPower!: number | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  riotDisplayName!: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  riotGameName!: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  tagLine!: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  region!: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  profileIconId!: number | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  summonerLevel!: number | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  profileImageUrl!: string | null;
+
+  @ApiProperty()
+  isSelf!: boolean;
+
+  @ApiPropertyOptional()
+  alreadyMember!: boolean | null;
+
+  @ApiProperty()
+  isAlreadyMember!: boolean;
+
+  @ApiProperty()
+  isEligible!: boolean;
+
+  @ApiPropertyOptional({ nullable: true })
+  inviteBlockedReason!: string | null;
+
+  @ApiPropertyOptional({ enum: GroupRole, nullable: true })
+  memberRole!: GroupRole | null;
+}
+
+export class InviteUserSearchResponseDto {
+  @ApiProperty({ type: [InviteUserSearchItemDto] })
+  items!: InviteUserSearchItemDto[];
 }
 
 export class InhouseHistoryQueryDto {
