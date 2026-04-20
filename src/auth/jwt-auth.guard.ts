@@ -1,4 +1,10 @@
-import { ExecutionContext, HttpStatus, Injectable, Logger } from '@nestjs/common';
+import {
+  ExecutionContext,
+  HttpException,
+  HttpStatus,
+  Injectable,
+  Logger,
+} from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 
 import { AuthErrorCode } from './auth-error-code';
@@ -15,6 +21,10 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
     _info: unknown,
     _context: ExecutionContext,
   ): TUser {
+    if (_err instanceof HttpException) {
+      throw _err;
+    }
+
     if (user) {
       return user;
     }

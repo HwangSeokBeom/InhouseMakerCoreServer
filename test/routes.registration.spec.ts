@@ -3,10 +3,17 @@ import 'reflect-metadata';
 import { INestApplication, Module } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 
+import { AppConfigController } from '../src/app-config/app-config.controller';
+import { AppConfigService } from '../src/app-config/app-config.service';
+import { BlocksController } from '../src/blocks/blocks.controller';
+import { BlocksService } from '../src/blocks/blocks.service';
 import { GroupsController } from '../src/groups/groups.controller';
 import { GroupsService } from '../src/groups/groups.service';
+import { ReportsController } from '../src/reports/reports.controller';
+import { ReportsService } from '../src/reports/reports.service';
 import { RecruitingController } from '../src/recruiting/recruiting.controller';
 import { RecruitingService } from '../src/recruiting/recruiting.service';
+import { MeController } from '../src/users/me.controller';
 import { UsersController } from '../src/users/users.controller';
 import { UsersService } from '../src/users/users.service';
 
@@ -37,8 +44,30 @@ describe('HTTP route registration', () => {
 
   beforeAll(async () => {
     @Module({
-      controllers: [RecruitingController, GroupsController, UsersController],
+      controllers: [
+        AppConfigController,
+        BlocksController,
+        GroupsController,
+        MeController,
+        RecruitingController,
+        ReportsController,
+        UsersController,
+      ],
       providers: [
+        {
+          provide: AppConfigService,
+          useValue: {
+            getPublicConfig: jest.fn(),
+          },
+        },
+        {
+          provide: BlocksService,
+          useValue: {
+            blockUser: jest.fn(),
+            unblockUser: jest.fn(),
+            listMyBlocks: jest.fn(),
+          },
+        },
         {
           provide: RecruitingService,
           useValue: {
@@ -70,10 +99,21 @@ describe('HTTP route registration', () => {
           provide: UsersService,
           useValue: {
             getMe: jest.fn(),
+            updateMyProfile: jest.fn(),
+            updateProfileImage: jest.fn(),
+            deleteProfileImage: jest.fn(),
+            withdrawMe: jest.fn(),
             searchInviteUsers: jest.fn(),
             getUserProfile: jest.fn(),
             getInhouseHistory: jest.fn(),
             getUserStats: jest.fn(),
+          },
+        },
+        {
+          provide: ReportsService,
+          useValue: {
+            createReport: jest.fn(),
+            listMyReports: jest.fn(),
           },
         },
       ],
@@ -102,6 +142,15 @@ describe('HTTP route registration', () => {
         'PATCH /groups/:groupId',
         'DELETE /groups/:groupId',
         'GET /groups/:groupId/member-candidates',
+        'PATCH /me/profile-image',
+        'DELETE /me/profile-image',
+        'DELETE /me',
+        'POST /reports',
+        'GET /me/reports',
+        'POST /blocks/:targetUserId',
+        'DELETE /blocks/:targetUserId',
+        'GET /me/blocks',
+        'GET /app-config/public',
         'GET /users/search',
         'GET /users',
       ]),

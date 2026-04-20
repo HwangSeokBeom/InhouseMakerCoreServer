@@ -10,7 +10,7 @@ export const POWER_ROLES = [
 
 export type PowerRole = (typeof POWER_ROLES)[number];
 
-export const POWER_PROFILE_VERSION = 'v2-explainable';
+export const POWER_PROFILE_VERSION = 'v3-secondary-evidence';
 
 export const RESULT_CONFIDENCE_WEIGHTS: Record<ResultStatus, number> = {
   [ResultStatus.CONFIRMED]: 1,

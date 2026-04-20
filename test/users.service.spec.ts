@@ -1,5 +1,12 @@
 import { Logger } from '@nestjs/common';
-import { GroupRole, MatchStatus, Position, ResultStatus, TeamSide } from '@prisma/client';
+import {
+  GroupRole,
+  MatchStatus,
+  Position,
+  ResultStatus,
+  TeamSide,
+  UserStatus,
+} from '@prisma/client';
 
 import { UsersService } from '../src/users/users.service';
 
@@ -8,6 +15,13 @@ describe('UsersService', () => {
     user: {
       findMany: jest.fn(),
       findUnique: jest.fn(),
+      update: jest.fn(),
+    },
+    authIdentity: {
+      deleteMany: jest.fn(),
+    },
+    userBlock: {
+      deleteMany: jest.fn(),
     },
     inhousePlayerStat: {
       findMany: jest.fn(),
@@ -26,6 +40,7 @@ describe('UsersService', () => {
     inhouseGroup: {
       count: jest.fn(),
     },
+    $transaction: jest.fn((operations: Array<Promise<unknown>>) => Promise.all(operations)),
   } as any;
   const riotChampionSummaryService = {
     getTopChampionsForUser: jest.fn(),
@@ -145,9 +160,198 @@ describe('UsersService', () => {
               groupId: 'group-1',
             },
           },
+          AND: [
+            {
+              AND: [
+                {
+                  blockedByUsers: {
+                    none: {
+                      userId: 'self-user',
+                    },
+                  },
+                },
+                {
+                  blockedUsers: {
+                    none: {
+                      targetUserId: 'self-user',
+                    },
+                  },
+                },
+              ],
+            },
+          ],
         }),
       }),
     );
+  });
+
+  it('uploads a profile image, stores the new URL, and removes the previous local file', async () => {
+    const fileStorage = {
+      store: jest.fn().mockResolvedValue({
+        url: '/uploads/profile-images/new.jpg',
+      }),
+      deleteByUrl: jest.fn(),
+    };
+    const serviceWithStorage = new UsersService(
+      prismaService,
+      riotChampionSummaryService,
+      fileStorage,
+    );
+    prismaService.user.findUnique
+      .mockResolvedValueOnce({
+        id: 'user-1',
+        profileImageUrl: '/uploads/profile-images/old.jpg',
+      })
+      .mockResolvedValueOnce({
+        id: 'user-1',
+        email: 'user@example.com',
+        nickname: 'UserOne',
+        status: UserStatus.ACTIVE,
+        profileImageUrl: '/uploads/profile-images/new.jpg',
+        primaryPosition: Position.MID,
+        secondaryPosition: Position.TOP,
+        isFillAvailable: false,
+        styleTags: [],
+        mannerScore: 100,
+        noshowCount: 0,
+        powerProfile: null,
+      });
+    prismaService.user.update.mockResolvedValue({});
+
+    const response = await serviceWithStorage.updateProfileImage('user-1', {
+      buffer: Buffer.from([1, 2, 3]),
+      originalname: 'avatar.png',
+      mimetype: 'image/png',
+      size: 3,
+    });
+
+    expect(fileStorage.store).toHaveBeenCalledWith(
+      expect.objectContaining({
+        directory: 'profile-images',
+        mimeType: 'image/png',
+      }),
+    );
+    expect(prismaService.user.update).toHaveBeenCalledWith({
+      where: { id: 'user-1' },
+      data: {
+        profileImageUrl: '/uploads/profile-images/new.jpg',
+      },
+    });
+    expect(fileStorage.deleteByUrl).toHaveBeenCalledWith('/uploads/profile-images/old.jpg');
+    expect(response.profileImageUrl).toBe('/uploads/profile-images/new.jpg');
+  });
+
+  it('rejects non-image profile uploads before storage', async () => {
+    const fileStorage = {
+      store: jest.fn(),
+      deleteByUrl: jest.fn(),
+    };
+    const serviceWithStorage = new UsersService(
+      prismaService,
+      riotChampionSummaryService,
+      fileStorage,
+    );
+
+    await expect(
+      serviceWithStorage.updateProfileImage('user-1', {
+        buffer: Buffer.from('not-image'),
+        originalname: 'avatar.gif',
+        mimetype: 'image/gif',
+        size: 9,
+      }),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: 'PROFILE_IMAGE_INVALID_TYPE',
+      }),
+    });
+    expect(fileStorage.store).not.toHaveBeenCalled();
+  });
+
+  it('deletes a profile image and returns the profile with a null image URL', async () => {
+    const fileStorage = {
+      store: jest.fn(),
+      deleteByUrl: jest.fn(),
+    };
+    const serviceWithStorage = new UsersService(
+      prismaService,
+      riotChampionSummaryService,
+      fileStorage,
+    );
+    prismaService.user.findUnique
+      .mockResolvedValueOnce({
+        id: 'user-1',
+        profileImageUrl: '/uploads/profile-images/old.jpg',
+      })
+      .mockResolvedValueOnce({
+        id: 'user-1',
+        email: 'user@example.com',
+        nickname: 'UserOne',
+        status: UserStatus.ACTIVE,
+        profileImageUrl: null,
+        primaryPosition: Position.MID,
+        secondaryPosition: Position.TOP,
+        isFillAvailable: false,
+        styleTags: [],
+        mannerScore: 100,
+        noshowCount: 0,
+        powerProfile: null,
+      });
+    prismaService.user.update.mockResolvedValue({});
+
+    const response = await serviceWithStorage.deleteProfileImage('user-1');
+
+    expect(prismaService.user.update).toHaveBeenCalledWith({
+      where: { id: 'user-1' },
+      data: {
+        profileImageUrl: null,
+      },
+    });
+    expect(fileStorage.deleteByUrl).toHaveBeenCalledWith('/uploads/profile-images/old.jpg');
+    expect(response.profileImageUrl).toBeNull();
+  });
+
+  it('withdraws the current account, anonymizes personal fields, and clears blocks and identities', async () => {
+    const fileStorage = {
+      store: jest.fn(),
+      deleteByUrl: jest.fn(),
+    };
+    const serviceWithStorage = new UsersService(
+      prismaService,
+      riotChampionSummaryService,
+      fileStorage,
+    );
+    prismaService.user.findUnique.mockResolvedValue({
+      id: 'user-1',
+      status: UserStatus.ACTIVE,
+      profileImageUrl: '/uploads/profile-images/old.jpg',
+    });
+    prismaService.authIdentity.deleteMany.mockResolvedValue({ count: 1 });
+    prismaService.user.update.mockResolvedValue({});
+    prismaService.userBlock.deleteMany.mockResolvedValue({ count: 2 });
+
+    const response = await serviceWithStorage.withdrawMe('user-1');
+
+    expect(prismaService.$transaction).toHaveBeenCalledWith([
+      expect.any(Promise),
+      expect.any(Promise),
+      expect.any(Promise),
+    ]);
+    expect(prismaService.user.update).toHaveBeenCalledWith({
+      where: { id: 'user-1' },
+      data: expect.objectContaining({
+        email: 'withdrawn-user-1@withdrawn.local',
+        nickname: 'withdrawn-user-1',
+        status: UserStatus.WITHDRAWN,
+        refreshTokenHash: null,
+        profileImageUrl: null,
+      }),
+    });
+    expect(fileStorage.deleteByUrl).toHaveBeenCalledWith('/uploads/profile-images/old.jpg');
+    expect(response).toMatchObject({
+      success: true,
+      userId: 'user-1',
+      status: UserStatus.WITHDRAWN,
+    });
   });
 
   it('returns a profile summary with safe topChampions defaults', async () => {

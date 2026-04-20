@@ -14,7 +14,10 @@ function assert(condition: unknown, message: string): asserts condition {
 function assertPowerProfileContract(data: any, label: string): void {
   assert(Number(data?.overallPower) > 0, `${label} overallPower should be populated`);
   assert(typeof data?.primaryPosition === 'string', `${label} primaryPosition should be populated`);
-  assert(typeof data?.secondaryPosition === 'string', `${label} secondaryPosition should be populated`);
+  assert(
+    typeof data?.secondaryPosition === 'string' || data?.secondaryPosition === null,
+    `${label} secondaryPosition should be a position or null`,
+  );
   assert(typeof data?.style?.stability === 'number', `${label} style.stability should be populated`);
   assert(typeof data?.style?.roleFocus === 'string', `${label} style.roleFocus should be populated`);
 

@@ -65,10 +65,13 @@ export class MeResponseDto {
   @ApiProperty({ enum: UserStatus })
   status!: UserStatus;
 
-  @ApiPropertyOptional({ enum: Position })
+  @ApiPropertyOptional({ nullable: true })
+  profileImageUrl!: string | null;
+
+  @ApiPropertyOptional({ enum: Position, nullable: true, required: false })
   primaryPosition!: Position | null;
 
-  @ApiPropertyOptional({ enum: Position })
+  @ApiPropertyOptional({ enum: Position, nullable: true, required: false })
   secondaryPosition!: Position | null;
 
   @ApiProperty()
@@ -94,6 +97,9 @@ export class UserProfileResponseDto {
   @ApiProperty()
   nickname!: string;
 
+  @ApiPropertyOptional({ nullable: true })
+  profileImageUrl!: string | null;
+
   @ApiPropertyOptional({ enum: Position, nullable: true, required: false })
   primaryPosition!: Position | null;
 
@@ -111,6 +117,15 @@ export class UserProfileResponseDto {
 
   @ApiProperty()
   profileVisible!: boolean;
+
+  @ApiPropertyOptional()
+  isBlockedByMe?: boolean;
+
+  @ApiPropertyOptional()
+  isBlockedUser?: boolean;
+
+  @ApiPropertyOptional()
+  canInteract?: boolean;
 
   @ApiProperty({ type: [String] })
   styleTags!: string[];
@@ -356,4 +371,18 @@ export class UserStatsResponseDto {
 
   @ApiPropertyOptional()
   groupRank!: number | null;
+}
+
+export class DeleteMyAccountResponseDto {
+  @ApiProperty()
+  success!: boolean;
+
+  @ApiProperty()
+  userId!: string;
+
+  @ApiProperty({ enum: UserStatus })
+  status!: UserStatus;
+
+  @ApiProperty()
+  withdrawnAt!: string;
 }

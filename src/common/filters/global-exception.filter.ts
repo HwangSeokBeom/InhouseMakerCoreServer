@@ -65,13 +65,15 @@ export class GlobalExceptionFilter implements ExceptionFilter {
               ? AppErrorCode.AUTH_REQUIRED
               : status === HttpStatus.NOT_FOUND
                 ? AppErrorCode.NOT_FOUND
-              : status === HttpStatus.TOO_MANY_REQUESTS
-                ? AuthErrorCode.RATE_LIMITED
-              : status === HttpStatus.FORBIDDEN
-                ? AppErrorCode.FORBIDDEN
-              : status === HttpStatus.INTERNAL_SERVER_ERROR
-                ? AuthErrorCode.INTERNAL_SERVER_ERROR
-                : undefined;
+                : status === HttpStatus.TOO_MANY_REQUESTS
+                  ? AuthErrorCode.RATE_LIMITED
+                  : status === HttpStatus.PAYLOAD_TOO_LARGE
+                    ? AppErrorCode.PROFILE_IMAGE_TOO_LARGE
+                    : status === HttpStatus.FORBIDDEN
+                      ? AppErrorCode.FORBIDDEN
+                      : status === HttpStatus.INTERNAL_SERVER_ERROR
+                        ? AuthErrorCode.INTERNAL_SERVER_ERROR
+                        : undefined;
     const prismaDebug = this.extractPrismaDebugMetadata(exception);
 
     this.logExceptionDebug(

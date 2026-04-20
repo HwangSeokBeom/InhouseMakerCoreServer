@@ -4,7 +4,10 @@ import { BasePowerCalculator, BasePowerInput } from '../src/power/calculators/ba
 import { FormScoreCalculator } from '../src/power/calculators/form-score.calculator';
 import { LanePowerCalculator } from '../src/power/calculators/lane-power.calculator';
 import { OverallPowerCalculator } from '../src/power/calculators/overall-power.calculator';
-import { resolveLaneAutoAssignment } from '../src/power/power-profile.contract';
+import {
+  extractLaneAutoAssignmentEvidence,
+  resolveLaneAutoAssignment,
+} from '../src/power/power-profile.contract';
 
 describe('Power regression fixtures', () => {
   const basePowerCalculator = new BasePowerCalculator();
@@ -103,6 +106,12 @@ describe('Power regression fixtures', () => {
       overall.finalRolePower,
       primaryPosition,
       secondaryPosition,
+      {
+        evidence: extractLaneAutoAssignmentEvidence({
+          sampleSize: lane.sampleSize,
+          roles: lane.roles,
+        }),
+      },
     );
 
     return {
@@ -292,7 +301,7 @@ describe('Power regression fixtures', () => {
       null,
     );
 
-    expect(result.auto.source).toBe('auto_fallback');
+    expect(result.auto.source).toBe('auto_dual_role');
     expect(result.auto.primaryPosition).toBe(Position.SUPPORT);
     expect(result.auto.secondaryPosition).toBe(Position.ADC);
     expect(result.auto.scoreGap.primaryToSecondary).toBeGreaterThan(4);

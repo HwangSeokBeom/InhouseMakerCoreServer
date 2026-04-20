@@ -5,6 +5,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import {
   GroupVisibility,
@@ -14,6 +15,7 @@ import {
   RecruitingPostStatus,
 } from '@prisma/client';
 
+import { BlockVisibilityPolicy } from '../blocks/block-visibility-policy.service';
 import { AuditLogService } from '../common/audit-log.service';
 import { AppErrorCode, AppException } from '../common/app.exception';
 import { GroupsService } from '../groups/groups.service';
@@ -40,6 +42,8 @@ export class RecruitingService {
     private readonly groupsService: GroupsService,
     private readonly notificationService: NotificationService,
     private readonly auditLogService: AuditLogService,
+    @Optional()
+    private readonly blockVisibilityPolicy: BlockVisibilityPolicy = new BlockVisibilityPolicy(),
   ) {}
 
   async createPost(
@@ -284,6 +288,9 @@ export class RecruitingService {
       where: {
         id: postId,
         deletedAt: null,
+        createdByUser: {
+          is: this.blockVisibilityPolicy.buildVisibleAuthorWhere(requesterUserId),
+        },
         group: {
           is: {
             archivedAt: null,
@@ -371,6 +378,9 @@ export class RecruitingService {
       where: {
         id: postId,
         deletedAt: null,
+        createdByUser: {
+          is: this.blockVisibilityPolicy.buildVisibleAuthorWhere(requesterUserId),
+        },
         group: {
           is: {
             archivedAt: null,
@@ -462,6 +472,9 @@ export class RecruitingService {
       where: {
         id: postId,
         deletedAt: null,
+        createdByUser: {
+          is: this.blockVisibilityPolicy.buildVisibleAuthorWhere(requesterUserId),
+        },
         group: {
           is: {
             archivedAt: null,
@@ -785,6 +798,14 @@ export class RecruitingService {
     const visibility = this.buildPostVisibilityWhere(query, options);
     if (visibility.condition) {
       and.push(visibility.condition);
+    }
+
+    if (options.requesterUserId) {
+      and.push({
+        createdByUser: {
+          is: this.blockVisibilityPolicy.buildVisibleAuthorWhere(options.requesterUserId),
+        },
+      });
     }
 
     const where = and.length === 1 ? and[0] : { AND: and };
@@ -1149,6 +1170,13 @@ export class RecruitingService {
       where: {
         id: postId,
         deletedAt: null,
+        ...(requesterUserId
+          ? {
+              createdByUser: {
+                is: this.blockVisibilityPolicy.buildVisibleAuthorWhere(requesterUserId),
+              },
+            }
+          : {}),
         group: {
           is: {
             archivedAt: null,

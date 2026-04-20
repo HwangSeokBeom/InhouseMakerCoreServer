@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 
+import { BlocksModule } from '../blocks/blocks.module';
 import { AuditLogService } from '../common/audit-log.service';
 import { PublicThrottleGuard } from '../common/guards/public-throttle.guard';
 import { GroupModule } from '../groups/groups.module';
@@ -9,7 +10,7 @@ import { RecruitingController } from './recruiting.controller';
 import { RecruitingService } from './recruiting.service';
 
 @Module({
-  imports: [GroupModule, NotificationModule],
+  imports: [BlocksModule, GroupModule, NotificationModule],
   controllers: [PublicRecruitingController, RecruitingController],
   providers: [RecruitingService, AuditLogService, PublicThrottleGuard],
 })

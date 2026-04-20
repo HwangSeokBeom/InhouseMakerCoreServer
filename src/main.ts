@@ -8,7 +8,9 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import express from 'express';
 import helmet from 'helmet';
+import path from 'node:path';
 
 import { AppModule } from './app.module';
 import { AppErrorCode } from './common/app.exception';
@@ -23,6 +25,11 @@ async function bootstrap(): Promise<void> {
   const prismaService = app.get(PrismaService);
 
   app.use(helmet());
+  const uploadDir = configService.get<string>('UPLOAD_DIR', 'uploads');
+  const uploadRoot = path.isAbsolute(uploadDir)
+    ? uploadDir
+    : path.resolve(process.cwd(), uploadDir);
+  app.use('/uploads', express.static(uploadRoot, { immutable: true, maxAge: '7d' }));
   app.enableCors();
   app.useGlobalPipes(
     new ValidationPipe({

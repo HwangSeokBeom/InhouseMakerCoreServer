@@ -196,6 +196,7 @@ export class AuthService {
         },
       });
     }
+    this.assertUserCanAuthenticate(user, AuthProvider.EMAIL);
 
     const identity = await this.prismaService.authIdentity.findUnique({
       where: {
@@ -286,6 +287,7 @@ export class AuthService {
         message: 'Refresh token is invalid.',
       });
     }
+    this.assertUserCanAuthenticate(user);
 
     const isValid = await compare(refreshToken, user.refreshTokenHash);
     if (!isValid) {
@@ -324,6 +326,7 @@ export class AuthService {
     });
 
     if (existingIdentity) {
+      this.assertUserCanAuthenticate(existingIdentity.user, claims.provider);
       return this.issueTokens(existingIdentity.user, {
         identityId: existingIdentity.id,
         provider: claims.provider,
@@ -621,6 +624,8 @@ export class AuthService {
     user: UserRecord,
     options: IssueTokensOptions = {},
   ): Promise<AuthTokensResponseDto> {
+    this.assertUserCanAuthenticate(user, options.provider ?? undefined);
+
     const { identityId, provider } = options;
     const accessPayload: TokenPayload = { sub: user.id, email: user.email, type: 'access' };
     const refreshPayload: TokenPayload = {
@@ -695,6 +700,24 @@ export class AuthService {
     });
 
     return latestIdentity?.provider ?? null;
+  }
+
+  private assertUserCanAuthenticate(
+    user: UserRecord,
+    provider?: AuthProvider | null,
+  ): void {
+    if (user.status === UserStatus.ACTIVE) {
+      return;
+    }
+
+    throw new AuthException(HttpStatus.FORBIDDEN, AuthErrorCode.ACCOUNT_UNAVAILABLE, {
+      provider: provider ?? undefined,
+      message: 'Only active accounts can authenticate.',
+      details: {
+        userId: user.id,
+        status: user.status,
+      },
+    });
   }
 
   private assertValidEmail(email: string): void {

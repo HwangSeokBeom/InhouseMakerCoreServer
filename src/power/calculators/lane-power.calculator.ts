@@ -28,6 +28,7 @@ export interface LanePowerBreakdown {
   lanePowerBeforeSpread: Record<PowerRole, number>;
   spreadAdjustments: Record<PowerRole, number>;
   spreadMultiplier: number;
+  sampleSize: number;
   roles: Record<PowerRole, LanePowerRoleBreakdown>;
   formula: string;
 }
@@ -154,6 +155,7 @@ export class LanePowerCalculator {
         return acc;
       }, {} as Record<PowerRole, number>),
       spreadMultiplier: this.spreadMultiplier,
+      sampleSize,
       roles,
       formula:
         'lanePower(role) = basePower + clamp(preference + experience + proficiency, -8.4, +10.8), then apply 1.28x spread around lane average',

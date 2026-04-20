@@ -25,6 +25,12 @@ export interface AppConfig {
   APPLE_AUDIENCE?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_AUDIENCE?: string;
+  UPLOAD_DIR?: string;
+  UPLOAD_BASE_URL?: string;
+  PRIVACY_POLICY_URL?: string;
+  TERMS_OF_SERVICE_URL?: string;
+  SUPPORT_EMAIL?: string;
+  APP_MINIMUM_VERSION?: string;
   ALLOW_SWAGGER: boolean;
 }
 
@@ -55,5 +61,11 @@ export const envValidationSchema = Joi.object<AppConfig>({
   APPLE_AUDIENCE: Joi.string().optional(),
   GOOGLE_CLIENT_ID: Joi.string().optional(),
   GOOGLE_AUDIENCE: Joi.string().optional(),
+  UPLOAD_DIR: Joi.string().default('uploads'),
+  UPLOAD_BASE_URL: Joi.string().uri().optional(),
+  PRIVACY_POLICY_URL: Joi.string().uri().optional(),
+  TERMS_OF_SERVICE_URL: Joi.string().uri().optional(),
+  SUPPORT_EMAIL: Joi.string().email().optional(),
+  APP_MINIMUM_VERSION: Joi.string().optional(),
   ALLOW_SWAGGER: Joi.boolean().truthy('true').truthy('1').falsy('false').falsy('0').default(true),
 });

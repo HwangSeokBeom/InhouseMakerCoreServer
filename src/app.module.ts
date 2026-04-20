@@ -3,7 +3,9 @@ import { ConfigModule } from '@nestjs/config';
 import { APP_FILTER, APP_INTERCEPTOR } from '@nestjs/core';
 
 import { AdminModule } from './admin/admin.module';
+import { AppConfigModule } from './app-config/app-config.module';
 import { AuthModule } from './auth/auth.module';
+import { BlocksModule } from './blocks/blocks.module';
 import { envValidationSchema } from './config/env.validation';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
@@ -17,6 +19,7 @@ import { PrismaModule } from './prisma/prisma.module';
 import { QueueModule } from './queue/queue.module';
 import { ReferenceModule } from './reference/reference.module';
 import { RecruitingModule } from './recruiting/recruiting.module';
+import { ReportsModule } from './reports/reports.module';
 import { ResultModule } from './results/results.module';
 import { RiotModule } from './riot/riot.module';
 import { UserModule } from './users/users.module';
@@ -32,7 +35,9 @@ import { UserModule } from './users/users.module';
     PrismaModule,
     QueueModule,
     AdminModule,
+    AppConfigModule,
     AuthModule,
+    BlocksModule,
     UserModule,
     RiotModule,
     PowerModule,
@@ -42,6 +47,7 @@ import { UserModule } from './users/users.module';
     ResultModule,
     ReferenceModule,
     RecruitingModule,
+    ReportsModule,
     NotificationModule,
     HealthModule,
   ],

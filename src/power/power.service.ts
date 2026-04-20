@@ -16,9 +16,11 @@ import { OverallPowerCalculator } from './calculators/overall-power.calculator';
 import { StyleScoreCalculator } from './calculators/style-score.calculator';
 import {
   buildPowerProfileDisplayScore,
+  extractLaneAutoAssignmentEvidence,
   normalizeLanePower,
   normalizeStyleScores,
   resolveLaneAutoAssignment,
+  LaneAutoAssignmentShape,
 } from './power-profile.contract';
 import { PowerProfileResponseDto } from './dto/power-profile.dto';
 import { POWER_PROFILE_VERSION, POWER_ROLES, PowerRole } from './power.constants';
@@ -219,12 +221,19 @@ export class PowerService {
       finalRolePower,
       user.primaryPosition,
       user.secondaryPosition,
+      {
+        evidence: extractLaneAutoAssignmentEvidence({
+          sampleSize: lanePowerBreakdown.sampleSize,
+          roles: lanePowerBreakdown.roles,
+        }),
+      },
     );
+    this.logSecondaryAssignmentDebug(userId, laneAutoAssignmentBasis);
     this.logPowerDebug(userId, 'lane_auto_assignment', {
       primary: laneAutoAssignmentBasis.primaryPosition,
       secondary: laneAutoAssignmentBasis.secondaryPosition,
       scores: laneAutoAssignmentBasis.laneScores,
-      source: laneAutoAssignmentBasis.source,
+      source: laneAutoAssignmentBasis.decisionSource,
       reason: laneAutoAssignmentBasis.reason,
     });
     const calculatedAt = new Date();
@@ -257,6 +266,7 @@ export class PowerService {
         lanePowerBeforeSpread: lanePowerBreakdown.lanePowerBeforeSpread,
         spreadAdjustments: lanePowerBreakdown.spreadAdjustments,
         spreadMultiplier: lanePowerBreakdown.spreadMultiplier,
+        sampleSize: lanePowerBreakdown.sampleSize,
         roles: lanePowerBreakdown.roles,
       },
       laneAutoAssignmentBasis,
@@ -388,9 +398,11 @@ export class PowerService {
       lanePower,
       profile.user?.primaryPosition ?? null,
       profile.user?.secondaryPosition ?? null,
+      {
+        evidence: extractLaneAutoAssignmentEvidence(explanation),
+      },
     );
-    explanation.laneAutoAssignmentBasis =
-      explanation.laneAutoAssignmentBasis ?? laneAutoAssignmentBasis;
+    explanation.laneAutoAssignmentBasis = laneAutoAssignmentBasis;
     explanation.displayScore =
       explanation.displayScore ??
       buildPowerProfileDisplayScore({
@@ -484,6 +496,40 @@ export class PowerService {
 
   private powerToRating(power: number): number {
     return Number((1000 + power * 10).toFixed(2));
+  }
+
+  private logSecondaryAssignmentDebug(
+    userId: string,
+    basis: LaneAutoAssignmentShape,
+  ): void {
+    this.logPowerDebug(userId, 'secondary_candidate', {
+      candidate: basis.secondaryCandidate,
+      rankedRoles: basis.rankedRoles,
+    });
+
+    for (const evaluation of basis.secondaryCandidateEvaluations) {
+      this.logPowerDebug(userId, 'secondary_evaluation', {
+        primary: basis.primaryPosition,
+        candidate: evaluation.candidate,
+        primaryToSecondaryGap: evaluation.primaryToSecondaryGap,
+        secondaryToThirdGap: evaluation.secondaryToThirdGap,
+        totalSpread: evaluation.totalSpread,
+        recentShare: evaluation.secondaryRoleEvidence.recentShare,
+        matchCount: evaluation.secondaryRoleEvidence.matchCount,
+        roleConfidence: evaluation.secondaryRoleEvidence.roleConfidence,
+        roleEvidenceFactor: evaluation.secondaryRoleEvidence.roleEvidenceFactor,
+        championPoolAlignment: evaluation.secondaryRoleEvidence.championPoolAlignment,
+        offRolePenaltyRisk: evaluation.offRolePenaltyRisk,
+        accepted: evaluation.accepted,
+        reason: evaluation.rejectedReason,
+      });
+    }
+
+    this.logPowerDebug(userId, 'secondary_assignment', {
+      accepted: basis.secondaryAccepted,
+      secondary: basis.secondaryPosition,
+      reason: basis.secondaryRejectedReason ?? basis.reason,
+    });
   }
 
   private logPowerDebug(

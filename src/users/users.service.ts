@@ -1,17 +1,27 @@
-import { HttpStatus, Injectable, Logger } from '@nestjs/common';
+import { HttpStatus, Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import {
   GroupRole,
   MatchStatus,
   ParticipationStatus,
   Position,
+  Prisma,
   ResultStatus,
   UserStatus,
 } from '@prisma/client';
 
+import { BlockVisibilityPolicy } from '../blocks/block-visibility-policy.service';
 import { AppErrorCode, AppException } from '../common/app.exception';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-request.interface';
+import {
+  FILE_STORAGE_PROVIDER,
+  FileStorageProvider,
+} from '../files/file-storage.provider';
 import { PrismaService } from '../prisma/prisma.service';
-import { normalizeLanePower, resolveLaneAutoAssignment } from '../power/power-profile.contract';
+import {
+  extractLaneAutoAssignmentEvidence,
+  normalizeLanePower,
+  resolveLaneAutoAssignment,
+} from '../power/power-profile.contract';
 import { RiotChampionSummaryService } from '../riot/riot-champion-summary.service';
 import {
   InhouseHistoryQueryDto,
@@ -19,12 +29,25 @@ import {
   InviteUserSearchItemDto,
   InviteUserSearchQueryDto,
   InviteUserSearchResponseDto,
+  DeleteMyAccountResponseDto,
   MeResponseDto,
   UserProfileResponseDto,
   UserStatsQueryDto,
   UserStatsResponseDto,
   UpdateMyProfileDto,
 } from './dto/profile.dto';
+import {
+  PROFILE_IMAGE_ALLOWED_MIME_TYPES,
+  PROFILE_IMAGE_DIRECTORY,
+  PROFILE_IMAGE_MAX_BYTES,
+} from './profile-image.constants';
+
+interface UploadedProfileImageFile {
+  buffer?: Buffer;
+  originalname: string;
+  mimetype: string;
+  size: number;
+}
 
 @Injectable()
 export class UsersService {
@@ -49,6 +72,11 @@ export class UsersService {
   constructor(
     private readonly prismaService: PrismaService,
     private readonly riotChampionSummaryService: RiotChampionSummaryService,
+    @Optional()
+    @Inject(FILE_STORAGE_PROVIDER)
+    private readonly fileStorageProvider?: FileStorageProvider,
+    @Optional()
+    private readonly blockVisibilityPolicy: BlockVisibilityPolicy = new BlockVisibilityPolicy(),
   ) {}
 
   async getMe(userId: string): Promise<MeResponseDto> {
@@ -59,6 +87,7 @@ export class UsersService {
           select: {
             overallPower: true,
             lanePowerJson: true,
+            breakdownJson: true,
           },
         },
       },
@@ -82,6 +111,7 @@ export class UsersService {
       email: user.email,
       nickname: user.nickname,
       status: user.status,
+      profileImageUrl: user.profileImageUrl,
       primaryPosition: laneAssignment.primaryPosition,
       secondaryPosition: laneAssignment.secondaryPosition,
       isFillAvailable: user.isFillAvailable,
@@ -111,6 +141,137 @@ export class UsersService {
     return this.getMe(userId);
   }
 
+  async updateProfileImage(
+    userId: string,
+    file?: UploadedProfileImageFile,
+  ): Promise<MeResponseDto> {
+    this.assertValidProfileImageFile(file);
+    const storageProvider = this.getFileStorageProvider();
+    const user = await this.prismaService.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        profileImageUrl: true,
+      },
+    });
+
+    if (!user) {
+      throw this.createUserNotFoundException(userId);
+    }
+
+    const storedFile = await storageProvider.store({
+      buffer: file.buffer!,
+      directory: PROFILE_IMAGE_DIRECTORY,
+      mimeType: file.mimetype,
+      originalName: file.originalname,
+    });
+
+    try {
+      await this.prismaService.user.update({
+        where: { id: userId },
+        data: {
+          profileImageUrl: storedFile.url,
+        },
+      });
+    } catch (error) {
+      await storageProvider.deleteByUrl(storedFile.url);
+      throw error;
+    }
+
+    await this.safeDeleteProfileImage(user.profileImageUrl);
+    return this.getMe(userId);
+  }
+
+  async deleteProfileImage(userId: string): Promise<MeResponseDto> {
+    const user = await this.prismaService.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        profileImageUrl: true,
+      },
+    });
+
+    if (!user) {
+      throw this.createUserNotFoundException(userId);
+    }
+
+    if (!user.profileImageUrl) {
+      return this.getMe(userId);
+    }
+
+    await this.prismaService.user.update({
+      where: { id: userId },
+      data: {
+        profileImageUrl: null,
+      },
+    });
+    await this.safeDeleteProfileImage(user.profileImageUrl);
+
+    return this.getMe(userId);
+  }
+
+  async withdrawMe(userId: string): Promise<DeleteMyAccountResponseDto> {
+    const user = await this.prismaService.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        profileImageUrl: true,
+        status: true,
+      },
+    });
+
+    if (!user) {
+      throw this.createUserNotFoundException(userId);
+    }
+
+    if (user.status === UserStatus.WITHDRAWN) {
+      throw new AppException(
+        HttpStatus.CONFLICT,
+        AppErrorCode.ACCOUNT_WITHDRAWN,
+        'Account is already withdrawn.',
+        {
+          userId,
+        },
+      );
+    }
+
+    const withdrawnAt = new Date();
+    await this.prismaService.$transaction([
+      this.prismaService.authIdentity.deleteMany({
+        where: { userId },
+      }),
+      this.prismaService.user.update({
+        where: { id: userId },
+        data: {
+          email: `withdrawn-${userId}@withdrawn.local`,
+          nickname: `withdrawn-${userId}`,
+          status: UserStatus.WITHDRAWN,
+          refreshTokenHash: null,
+          profileImageUrl: null,
+          termsAgreedAt: null,
+          privacyAgreedAt: null,
+          marketingOptInAt: null,
+          styleTags: Prisma.JsonNull,
+          withdrawnAt,
+        },
+      }),
+      this.prismaService.userBlock.deleteMany({
+        where: {
+          OR: [{ userId }, { targetUserId: userId }],
+        },
+      }),
+    ]);
+
+    await this.safeDeleteProfileImage(user.profileImageUrl);
+
+    return {
+      success: true,
+      userId,
+      status: UserStatus.WITHDRAWN,
+      withdrawnAt: withdrawnAt.toISOString(),
+    };
+  }
+
   async getUserProfile(
     requesterUserId: string,
     targetUserId: string,
@@ -124,6 +285,7 @@ export class UsersService {
           select: {
             overallPower: true,
             lanePowerJson: true,
+            breakdownJson: true,
           },
         },
       },
@@ -140,6 +302,34 @@ export class UsersService {
       );
     }
 
+    const visibility = await this.blockVisibilityPolicy.resolveVisibility(
+      requesterUserId,
+      targetUserId,
+    );
+
+    if (!visibility.visible) {
+      return {
+        id: user.id,
+        userId: user.id,
+        nickname: user.nickname,
+        profileImageUrl: user.profileImageUrl,
+        primaryPosition: null,
+        mainPosition: null,
+        secondaryPosition: null,
+        isFillAvailable: false,
+        recentPower: null,
+        profileVisible: false,
+        isBlockedByMe: visibility.isBlockedByMe,
+        isBlockedUser: visibility.isBlockedUser,
+        canInteract: false,
+        styleTags: [],
+        mannerScore: user.mannerScore,
+        noshowCount: user.noshowCount,
+        topChampions: [],
+        topChampionAggregationStatus: this.createHiddenTopChampionAggregationStatus(),
+      };
+    }
+
     const topChampionSummary = await this.riotChampionSummaryService.getTopChampionSummaryForUser(
       targetUserId,
     );
@@ -149,12 +339,16 @@ export class UsersService {
       id: user.id,
       userId: user.id,
       nickname: user.nickname,
+      profileImageUrl: user.profileImageUrl,
       primaryPosition: laneAssignment.primaryPosition,
       mainPosition: laneAssignment.primaryPosition,
       secondaryPosition: laneAssignment.secondaryPosition,
       isFillAvailable: user.isFillAvailable,
       recentPower: user.powerProfile?.overallPower ?? null,
       profileVisible: true,
+      isBlockedByMe: visibility.isBlockedByMe,
+      isBlockedUser: visibility.isBlockedUser,
+      canInteract: visibility.canInteract,
       styleTags: this.parseStringArray(user.styleTags),
       mannerScore: user.mannerScore,
       noshowCount: user.noshowCount,
@@ -524,15 +718,98 @@ export class UsersService {
     });
 
     if (!user) {
+      throw this.createUserNotFoundException(userId);
+    }
+  }
+
+  private assertValidProfileImageFile(
+    file?: UploadedProfileImageFile,
+  ): asserts file is UploadedProfileImageFile & { buffer: Buffer } {
+    if (!file?.buffer || file.buffer.length === 0) {
       throw new AppException(
-        HttpStatus.NOT_FOUND,
-        AppErrorCode.USER_NOT_FOUND,
-        'User not found.',
+        HttpStatus.BAD_REQUEST,
+        AppErrorCode.PROFILE_IMAGE_REQUIRED,
+        'Profile image file is required.',
+      );
+    }
+
+    if (file.size > PROFILE_IMAGE_MAX_BYTES || file.buffer.length > PROFILE_IMAGE_MAX_BYTES) {
+      throw new AppException(
+        HttpStatus.PAYLOAD_TOO_LARGE,
+        AppErrorCode.PROFILE_IMAGE_TOO_LARGE,
+        'Profile image file is too large.',
         {
-          userId,
+          maxBytes: PROFILE_IMAGE_MAX_BYTES,
+          receivedBytes: file.size,
         },
       );
     }
+
+    if (!(PROFILE_IMAGE_ALLOWED_MIME_TYPES as readonly string[]).includes(file.mimetype)) {
+      throw new AppException(
+        HttpStatus.BAD_REQUEST,
+        AppErrorCode.PROFILE_IMAGE_INVALID_TYPE,
+        'Only JPEG and PNG profile images are allowed.',
+        {
+          allowedMimeTypes: PROFILE_IMAGE_ALLOWED_MIME_TYPES,
+          receivedMimeType: file.mimetype,
+        },
+      );
+    }
+  }
+
+  private getFileStorageProvider(): FileStorageProvider {
+    if (!this.fileStorageProvider) {
+      throw new AppException(
+        HttpStatus.INTERNAL_SERVER_ERROR,
+        AppErrorCode.INTERNAL_SERVER_ERROR,
+        'File storage provider is not configured.',
+      );
+    }
+
+    return this.fileStorageProvider;
+  }
+
+  private async safeDeleteProfileImage(url: string | null): Promise<void> {
+    if (!url || !this.fileStorageProvider) {
+      return;
+    }
+
+    try {
+      await this.fileStorageProvider.deleteByUrl(url);
+    } catch (error) {
+      this.historyConsistencyLogger.warn(
+        `[ProfileImageCleanup] failed userProfileImageUrl=${url} error=${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  private createUserNotFoundException(userId: string): AppException {
+    return new AppException(
+      HttpStatus.NOT_FOUND,
+      AppErrorCode.USER_NOT_FOUND,
+      'User not found.',
+      {
+        userId,
+      },
+    );
+  }
+
+  private createHiddenTopChampionAggregationStatus() {
+    return {
+      status: 'EMPTY' as const,
+      reason: 'none' as const,
+      message: 'Profile is hidden because a block relationship exists.',
+      hasUsableContent: false,
+      totalMatches: 0,
+      rankedMatches: 0,
+      eligibleMatches: 0,
+      mappedMatches: 0,
+      thresholdUsed: null,
+      syncCoverageSummary: {},
+    };
   }
 
   async findInviteUsers(
@@ -554,6 +831,7 @@ export class UsersService {
           contains: normalizedQuery,
           mode: 'insensitive',
         },
+        AND: [this.blockVisibilityPolicy.buildVisibleUserWhere(requesterUserId)],
         ...(options.groupId && options.excludeExistingMembers
           ? {
               groupMemberships: {
@@ -567,12 +845,14 @@ export class UsersService {
       select: {
         id: true,
         nickname: true,
+        profileImageUrl: true,
         primaryPosition: true,
         secondaryPosition: true,
         powerProfile: {
           select: {
             overallPower: true,
             lanePowerJson: true,
+            breakdownJson: true,
           },
         },
         riotAccounts: {
@@ -628,7 +908,7 @@ export class UsersService {
           region: riotAccount?.region ?? null,
           profileIconId: riotAccount?.profileIconId ?? null,
           summonerLevel: riotAccount?.summonerLevel ?? null,
-          profileImageUrl: null,
+          profileImageUrl: user.profileImageUrl,
           isSelf: eligibility.isSelf,
           alreadyMember: options.groupId ? membership !== null : null,
           isAlreadyMember: eligibility.isAlreadyMember,
@@ -659,11 +939,14 @@ export class UsersService {
     powerProfile?: {
       overallPower: number;
       lanePowerJson: unknown;
+      breakdownJson?: unknown;
     } | null;
   }) {
     const overallPower = user.powerProfile?.overallPower ?? 50;
     const lanePower = normalizeLanePower(overallPower, user.powerProfile?.lanePowerJson ?? null);
-    return resolveLaneAutoAssignment(lanePower, user.primaryPosition, user.secondaryPosition);
+    return resolveLaneAutoAssignment(lanePower, user.primaryPosition, user.secondaryPosition, {
+      evidence: extractLaneAutoAssignmentEvidence(user.powerProfile?.breakdownJson ?? null),
+    });
   }
 
   private buildRiotDisplayName(

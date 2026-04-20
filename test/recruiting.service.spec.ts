@@ -127,7 +127,7 @@ describe('RecruitingService', () => {
     );
     expect(prismaService.recruitingPost.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: {
+        where: expect.objectContaining({
           id: created.id,
           deletedAt: null,
           group: {
@@ -135,7 +135,7 @@ describe('RecruitingService', () => {
               archivedAt: null,
             },
           },
-        },
+        }),
         include: expect.objectContaining({
           group: true,
         }),

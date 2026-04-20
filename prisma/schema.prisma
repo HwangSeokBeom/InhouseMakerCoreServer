@@ -155,6 +155,29 @@ enum AuthProvider {
 enum UserStatus {
   ACTIVE
   SUSPENDED
+  WITHDRAWN
+}
+
+enum ReportTargetType {
+  USER
+  RECRUITMENT
+  COMMENT
+  MESSAGE
+}
+
+enum ReportReason {
+  HARASSMENT
+  SPAM
+  INAPPROPRIATE_CONTENT
+  IMPERSONATION
+  OTHER
+}
+
+enum ReportStatus {
+  PENDING
+  REVIEWED
+  RESOLVED
+  REJECTED
 }
 
 model User {
@@ -163,6 +186,8 @@ model User {
   status           UserStatus            @default(ACTIVE)
   refreshTokenHash String?               @map("refresh_token_hash")
   nickname         String                @unique
+  profileImageUrl  String?               @map("profile_image_url")
+  withdrawnAt      DateTime?             @map("withdrawn_at")
   termsAgreedAt    DateTime?             @map("terms_agreed_at")
   privacyAgreedAt  DateTime?             @map("privacy_agreed_at")
   marketingOptInAt DateTime?             @map("marketing_opt_in_at")
@@ -192,8 +217,44 @@ model User {
   createdRecruitingPosts   RecruitingPost[]        @relation("recruiting_post_created_by")
   recruitingApplications   RecruitingPostApplication[]
   authIdentities           AuthIdentity[]
+  reports                  Report[]                @relation("report_reporter")
+  blockedUsers             UserBlock[]             @relation("user_blocks_created")
+  blockedByUsers           UserBlock[]             @relation("user_blocks_received")
 
   @@map("users")
+}
+
+model Report {
+  id             String           @id @default(cuid())
+  reporterUserId String           @map("reporter_user_id")
+  targetType     ReportTargetType @map("target_type")
+  targetId       String           @map("target_id")
+  reason         ReportReason
+  detail         String?
+  status         ReportStatus     @default(PENDING)
+  createdAt      DateTime         @default(now()) @map("created_at")
+  updatedAt      DateTime         @updatedAt @map("updated_at")
+
+  reporter User @relation("report_reporter", fields: [reporterUserId], references: [id], onDelete: Cascade)
+
+  @@index([reporterUserId, createdAt])
+  @@index([targetType, targetId, status])
+  @@index([targetType, targetId, reporterUserId, createdAt])
+  @@map("reports")
+}
+
+model UserBlock {
+  id           String   @id @default(cuid())
+  userId       String   @map("user_id")
+  targetUserId String   @map("target_user_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  user       User @relation("user_blocks_created", fields: [userId], references: [id], onDelete: Cascade)
+  targetUser User @relation("user_blocks_received", fields: [targetUserId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, targetUserId])
+  @@index([targetUserId])
+  @@map("user_blocks")
 }
 
 model AuthIdentity {

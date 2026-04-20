@@ -224,6 +224,21 @@ describe('PowerService', () => {
         displayScore: {
           sourceField: 'overallPower',
         },
+        lanePower: {
+          sampleSize: 28,
+          roles: {
+            [Position.MID]: {
+              matches: 18,
+              roleShare: 0.6429,
+              roleConfidence: 1,
+            },
+            [Position.ADC]: {
+              matches: 7,
+              roleShare: 0.25,
+              roleConfidence: 1,
+            },
+          },
+        },
       },
       styleScoresJson: { stability: 50, carry: 50, teamContribution: 50, laneInfluence: 50 },
       basePower: 69,
@@ -241,10 +256,19 @@ describe('PowerService', () => {
     expect(response.primaryPosition).toBe(Position.MID);
     expect(response.secondaryPosition).toBe(Position.ADC);
     expect(response.explanation.laneAutoAssignmentBasis).toMatchObject({
-      source: 'auto_fallback',
+      source: 'auto_dual_role',
+      decisionSource: 'auto_dual_role',
       primaryPosition: Position.MID,
       secondaryPosition: Position.ADC,
+      secondaryAccepted: true,
+      secondaryRoleEvidence: expect.objectContaining({
+        matches: 7,
+        recentShare: 0.25,
+      }),
     });
+    expect(
+      (response.explanation.laneAutoAssignmentBasis as Record<string, unknown>).reason,
+    ).toEqual(expect.stringContaining('recent role evidence'));
   });
 
   it('keeps non-empty top champions in the power-profile response even when aggregation status is partial', async () => {
