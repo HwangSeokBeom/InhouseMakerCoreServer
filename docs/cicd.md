@@ -2,10 +2,10 @@
 
 ## 개요
 
-이 저장소는 `dev -> staging -> main` 브랜치 전략을 기준으로 다음 흐름을 사용한다.
+이 저장소는 `dev -> main` 브랜치 전략을 기준으로 다음 흐름을 사용한다.
 
-- PR to `dev`, `staging`, `main`: GitHub Actions에서 `lint`, `build`, `test` 실행
-- Push to `staging`: staging EC2에 자동 배포
+- PR to `dev`, `main`: GitHub Actions에서 `lint`, `build`, `test` 실행
+- Push to `dev`: development EC2에 자동 배포
 - Push to `main`: production EC2에 자동 배포
 
 배포는 EC2 내부에서 다음 순서로 진행된다.
@@ -23,23 +23,23 @@
 ## 추가된 파일
 
 - `.github/workflows/server-ci.yml`
-- `.github/workflows/server-staging-deploy.yml`
+- `.github/workflows/server-development-deploy.yml`
 - `.github/workflows/server-production-deploy.yml`
-- `scripts/deploy-staging.sh`
+- `scripts/deploy-development.sh`
 - `scripts/deploy-production.sh`
 - `ecosystem.config.cjs`
 
 ## Workflow 이름
 
 - `Server CI`
-- `Server Staging Deploy`
+- `Server Development Deploy`
 - `Server Production Deploy`
 
 ## GitHub Environments 와 Secrets
 
 GitHub repository의 `Settings -> Environments` 에서 아래 두 environment를 만든다.
 
-- `staging`
+- `development`
 - `production`
 
 각 environment에 동일한 이름으로 아래 secrets를 등록한다.
@@ -51,13 +51,11 @@ GitHub repository의 `Settings -> Environments` 에서 아래 두 environment를
 - `DEPLOY_PATH`: 서버에 저장소를 둘 절대 경로. 예: `/srv/inhouse-maker-core-server`
 - `ENV_FILE`: 멀티라인 환경 변수 파일 전체 내용
 
-`ENV_FILE` 은 staging 환경에서는 `.env.staging`, production 환경에서는 `.env.production` 으로 업로드된다.
-
-공통값을 `.env` 로 분리해서 쓸 계획이면 `.env` 파일은 EC2에 별도로 준비해야 한다. 현재 workflow는 `.env.staging` 또는 `.env.production` 만 업로드한다.
+`ENV_FILE` 은 development 환경에서는 `.env.development`, production 환경에서는 `.env.production` 으로 업로드된다.
 
 ## ENV_FILE 권장 값
 
-기본 애플리케이션 환경 변수는 `.env.example` 을 따른다. 배포용으로는 최소 아래 값들이 필요하다.
+기본 애플리케이션 환경 변수는 `.env.example` 을 따르고, 실제 운영 파일은 `.env.development`, `.env.production` 두 개로만 관리한다. 배포용으로는 최소 아래 값들이 필요하다.
 
 - `PORT`
 - `DATABASE_URL`
@@ -84,11 +82,11 @@ GitHub repository의 `Settings -> Environments` 에서 아래 두 environment를
 - `HEALTH_CHECK_MAX_ATTEMPTS`
 - `HEALTH_CHECK_DELAY_SECONDS`
 
-staging/prod 모두 런타임 `NODE_ENV` 는 `production` 으로 실행되고, `APP_ENV` 는 각각 `staging`, `production` 으로 주입된다.
+development 배포는 런타임 `NODE_ENV=development`, production 배포는 `NODE_ENV=production` 으로 실행된다. `APP_ENV` 를 함께 쓰는 경우에도 `development`, `production` 만 사용한다.
 
 ## PM2 프로세스 이름
 
-- staging: `inhouse-maker-server-staging`
+- development: `inhouse-maker-server-development`
 - production: `inhouse-maker-server-production`
 
 ## EC2 선행 조건
@@ -123,15 +121,15 @@ SSH 사용자는 `DEPLOY_PATH` 에 쓰기 권한이 있어야 한다.
 
 현재 저장소에는 별도 ESLint 설정이 없어서 `lint` 는 `typecheck` 를 호출하는 구조이고, 실제 내용은 `tsc --noEmit` 기반 타입 검증이다.
 
-### 2. Staging 배포
+### 2. Development 배포
 
-`server-staging-deploy.yml` 은 `staging` 브랜치 push 에만 동작한다.
+`server-development-deploy.yml` 은 `dev` 브랜치 push 에만 동작한다.
 
-- branch guard 수행
+- dev branch guard 수행
 - SSH 접속 설정
 - EC2에 저장소가 없으면 초기화 후 원격 코드 fetch
-- `ENV_FILE` 을 `.env.staging` 으로 업로드
-- `scripts/deploy-staging.sh` 실행
+- `ENV_FILE` 을 `.env.development` 으로 업로드
+- `scripts/deploy-development.sh` 실행
 
 ### 3. Production 배포
 
@@ -147,7 +145,7 @@ SSH 사용자는 `DEPLOY_PATH` 에 쓰기 권한이 있어야 한다.
 
 deploy workflow에는 environment별 `concurrency` 가 걸려 있다.
 
-- staging: `server-deploy-staging`
+- development: `server-deploy-development`
 - production: `server-deploy-production`
 
 같은 environment의 배포는 동시에 두 개 이상 실행되지 않는다.
@@ -177,7 +175,7 @@ deploy workflow에는 environment별 `concurrency` 가 걸려 있다.
 
 아래 값은 코드로 자동 생성되지 않으므로 직접 정해야 한다.
 
-- GitHub environment `staging`, `production`
+- GitHub environment `development`, `production`
 - 각 environment의 secrets 값
 - EC2에 설치할 Node.js 버전
 - EC2 SSH 사용자와 권한
@@ -191,7 +189,7 @@ EC2에서 수동으로 같은 스크립트를 실행해 점검할 수 있다.
 
 ```bash
 cd /srv/inhouse-maker-core-server
-bash scripts/deploy-staging.sh
+bash scripts/deploy-development.sh
 ```
 
 ```bash

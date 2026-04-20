@@ -23,7 +23,6 @@ import {
 } from '@prisma/client';
 import { hash } from 'bcryptjs';
 
-import { resolveNodeEnv } from '../src/config/runtime-env';
 import { POWER_PROFILE_VERSION } from '../src/power/power.constants';
 
 const PASSWORD_SALT_ROUNDS = 10;
@@ -1677,7 +1676,7 @@ export function buildDevFixturePlan(anchor: Date = new Date()) {
 }
 
 function assertDevSeedEnabled(): void {
-  const nodeEnv = resolveNodeEnv(process.env.NODE_ENV);
+  const nodeEnv = process.env.NODE_ENV ?? 'development';
   const devSeedEnabled = process.env.DEV_SEED_ENABLED === 'true';
 
   if (nodeEnv === 'production') {

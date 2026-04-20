@@ -1,7 +1,7 @@
 module.exports = {
   apps: [
     {
-      name: 'inhouse-maker-server-staging',
+      name: 'inhouse-maker-server-development',
       cwd: __dirname,
       script: 'dist/main.js',
       instances: 1,
@@ -10,9 +10,10 @@ module.exports = {
       watch: false,
       max_restarts: 10,
       min_uptime: '10s',
+      env_file: '.env.development',
       env: {
-        NODE_ENV: 'production',
-        APP_ENV: 'staging',
+        NODE_ENV: 'development',
+        APP_ENV: 'development',
       },
     },
     {
@@ -25,6 +26,7 @@ module.exports = {
       watch: false,
       max_restarts: 10,
       min_uptime: '10s',
+      env_file: '.env.production',
       env: {
         NODE_ENV: 'production',
         APP_ENV: 'production',

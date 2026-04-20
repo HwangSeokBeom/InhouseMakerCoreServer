@@ -3,8 +3,6 @@ import path from 'node:path';
 
 import { PrismaClient } from '@prisma/client';
 
-import { resolveEnvFilePath } from '../src/config/runtime-env';
-
 const TEST_MEMBER_FIXTURE_EMAILS = [
   'dev_mock_aaa33@inhouse.local',
   'dev_mock_top_hyeon@inhouse.local',
@@ -36,7 +34,8 @@ function loadEnv() {
     return;
   }
 
-  const envPath = path.resolve(process.cwd(), resolveEnvFilePath());
+  const nodeEnv = process.env.NODE_ENV ?? 'development';
+  const envPath = path.resolve(process.cwd(), `.env.${nodeEnv}`);
   const envFile = readFileSync(envPath, 'utf8');
 
   for (const line of envFile.split(/\r?\n/)) {

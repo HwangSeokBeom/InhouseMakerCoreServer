@@ -1,30 +1,30 @@
-name: Server Staging Deploy
+name: Server Development Deploy
 
 on:
   push:
     branches:
-      - staging
+      - dev
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: server-deploy-staging
+  group: server-deploy-development
   cancel-in-progress: false
 
 jobs:
   deploy:
-    name: Deploy to staging EC2
-    if: github.ref == 'refs/heads/staging'
+    name: Deploy to development EC2
+    if: github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
-    environment: staging
+    environment: development
     steps:
-      - name: Guard staging branch
+      - name: Guard dev branch
         run: |
           set -euo pipefail
-          if [[ "${GITHUB_REF_NAME}" != "staging" ]]; then
-            echo "::error::This workflow only deploys the staging branch."
+          if [[ "${GITHUB_REF_NAME}" != "dev" ]]; then
+            echo "::error::This workflow only deploys the dev branch."
             exit 1
           fi
 
@@ -54,7 +54,7 @@ jobs:
           EC2_HOST: ${{ secrets.EC2_HOST }}
           EC2_SSH_PORT: ${{ secrets.EC2_SSH_PORT }}
           EC2_USER: ${{ secrets.EC2_USER }}
-          TARGET_BRANCH: staging
+          TARGET_BRANCH: dev
           GITHUB_REPOSITORY: ${{ github.repository }}
           DEPLOY_REPOSITORY_URL: https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git
         run: |
@@ -85,7 +85,7 @@ jobs:
           fi
           EOF
 
-      - name: Upload staging environment file
+      - name: Upload development environment file
         env:
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
           EC2_HOST: ${{ secrets.EC2_HOST }}
@@ -101,19 +101,19 @@ jobs:
           trap 'rm -f "${temp_env_file}"' EXIT
 
           printf '%s' "${ENV_FILE}" > "${temp_env_file}"
-          scp -P "${EC2_SSH_PORT}" "${temp_env_file}" "${EC2_USER}@${EC2_HOST}:${DEPLOY_PATH}/.env.staging"
-          ssh -p "${EC2_SSH_PORT}" "${EC2_USER}@${EC2_HOST}" "chmod 600 '${DEPLOY_PATH}/.env.staging'"
+          scp -P "${EC2_SSH_PORT}" "${temp_env_file}" "${EC2_USER}@${EC2_HOST}:${DEPLOY_PATH}/.env.development"
+          ssh -p "${EC2_SSH_PORT}" "${EC2_USER}@${EC2_HOST}" "chmod 600 '${DEPLOY_PATH}/.env.development'"
 
-      - name: Run staging deployment
+      - name: Run development deployment
         env:
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
           EC2_HOST: ${{ secrets.EC2_HOST }}
           EC2_SSH_PORT: ${{ secrets.EC2_SSH_PORT }}
           EC2_USER: ${{ secrets.EC2_USER }}
-          TARGET_BRANCH: staging
+          TARGET_BRANCH: dev
           DEPLOY_REPOSITORY_URL: https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git
         run: |
           set -euo pipefail
 
           ssh -p "${EC2_SSH_PORT}" "${EC2_USER}@${EC2_HOST}" \
-            "cd '${DEPLOY_PATH}' && GITHUB_REF_NAME='${TARGET_BRANCH}' DEPLOY_REPOSITORY_URL='${DEPLOY_REPOSITORY_URL}' bash scripts/deploy-staging.sh"
+            "cd '${DEPLOY_PATH}' && GITHUB_REF_NAME='${TARGET_BRANCH}' DEPLOY_REPOSITORY_URL='${DEPLOY_REPOSITORY_URL}' bash scripts/deploy-development.sh"

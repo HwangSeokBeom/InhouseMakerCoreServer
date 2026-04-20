@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import { SnapshotType } from '@prisma/client';
 
+import { resolveEnvFilePath } from '../src/config/runtime-env';
 import { BasePowerCalculator } from '../src/power/calculators/base-power.calculator';
 import { FormScoreCalculator } from '../src/power/calculators/form-score.calculator';
 import { InhouseMmrCalculator } from '../src/power/calculators/inhouse-mmr.calculator';
@@ -18,8 +19,7 @@ function loadEnv() {
     return;
   }
 
-  const nodeEnv = process.env.NODE_ENV ?? 'development';
-  const envPath = path.resolve(process.cwd(), `.env.${nodeEnv}`);
+  const envPath = path.resolve(process.cwd(), resolveEnvFilePath());
   const envFile = readFileSync(envPath, 'utf8');
 
   for (const line of envFile.split(/\r?\n/)) {

@@ -5,6 +5,7 @@ import { INestApplication, Injectable, Logger, OnModuleDestroy, OnModuleInit } f
 import { PrismaClient } from '@prisma/client';
 
 import { serializeLogPayload } from '../common/request-debug.util';
+import { resolveNodeEnv } from '../config/runtime-env';
 
 @Injectable()
 export class PrismaService
@@ -30,7 +31,7 @@ export class PrismaService
   }
 
   private async logPendingMigrationStatus(): Promise<void> {
-    if (process.env.NODE_ENV === 'production') {
+    if (resolveNodeEnv(process.env.NODE_ENV) === 'production') {
       return;
     }
 

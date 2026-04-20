@@ -6,6 +6,7 @@ import { HttpService } from '@nestjs/axios';
 import { Position, SnapshotType, VerificationStatus } from '@prisma/client';
 
 import { AuditLogService } from '../src/common/audit-log.service';
+import { resolveEnvFilePath } from '../src/config/runtime-env';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { BasePowerCalculator } from '../src/power/calculators/base-power.calculator';
 import { FormScoreCalculator } from '../src/power/calculators/form-score.calculator';
@@ -23,8 +24,7 @@ function loadEnv() {
     return;
   }
 
-  const nodeEnv = process.env.NODE_ENV ?? 'development';
-  const envPath = path.resolve(process.cwd(), `.env.${nodeEnv}`);
+  const envPath = path.resolve(process.cwd(), resolveEnvFilePath());
   const envFile = readFileSync(envPath, 'utf8');
   for (const line of envFile.split(/\r?\n/)) {
     if (!line || line.startsWith('#')) {

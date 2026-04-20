@@ -4,6 +4,7 @@ import { MatchStatus, ParticipationStatus, Position, ResultStatus, TeamSide } fr
 
 import { AppErrorCode, AppException } from '../common/app.exception';
 import { toPrismaJson } from '../common/prisma-json.util';
+import { isDebugRuntime as isDebugRuntimeEnv } from '../config/runtime-env';
 import { MatchesService } from '../matches/matches.service';
 import { PowerService } from '../power/power.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -423,10 +424,10 @@ export class MatchmakingService {
   }
 
   private isDebugRuntime(): boolean {
-    const nodeEnv = (this.configService?.get<string>('NODE_ENV') ?? process.env.NODE_ENV ?? 'development').toLowerCase();
-    const appEnv = (this.configService?.get<string>('APP_ENV') ?? process.env.APP_ENV ?? '').toLowerCase();
-
-    return nodeEnv === 'development' || nodeEnv === 'test' || appEnv === 'local' || appEnv === 'test' || appEnv === 'development';
+    return isDebugRuntimeEnv(
+      this.configService?.get<string>('NODE_ENV') ?? process.env.NODE_ENV,
+      this.configService?.get<string>('APP_ENV') ?? process.env.APP_ENV,
+    );
   }
 
   private defaultLanePower(overallPower: number): Record<string, number> {

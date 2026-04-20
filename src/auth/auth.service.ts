@@ -12,6 +12,7 @@ import { compare, hash } from 'bcryptjs';
 import { isEmail } from 'class-validator';
 import { randomUUID } from 'node:crypto';
 
+import { resolveNodeEnv } from '../config/runtime-env';
 import { PrismaService } from '../prisma/prisma.service';
 import { AppleIdentityTokenVerifierService } from './apple-identity-token-verifier.service';
 import { AuthErrorCode } from './auth-error-code';
@@ -791,7 +792,7 @@ export class AuthService {
   }
 
   private shouldLogSignupDebug(): boolean {
-    return this.configService.get<string>('NODE_ENV') === 'development';
+    return resolveNodeEnv(this.configService.get<string>('NODE_ENV')) === 'development';
   }
 
   private logSignupDebug(event: string, details: Record<string, unknown>): void {

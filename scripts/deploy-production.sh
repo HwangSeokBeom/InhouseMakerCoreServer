@@ -35,10 +35,6 @@ load_environment() {
   [[ -f "${ENV_FILE}" ]] || fail "Missing environment file: ${ENV_FILE}"
 
   set -a
-  if [[ -f ".env" ]]; then
-    # shellcheck disable=SC1091
-    source ".env"
-  fi
   # shellcheck disable=SC1090
   source "${ENV_FILE}"
   set +a

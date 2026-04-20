@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-TARGET_BRANCH="staging"
-DEPLOY_ENV="staging"
-ENV_FILE=".env.staging"
-PM2_APP_NAME="inhouse-maker-server-staging"
+TARGET_BRANCH="dev"
+DEPLOY_ENV="development"
+ENV_FILE=".env.development"
+PM2_APP_NAME="inhouse-maker-server-development"
 
 log() {
   printf '[deploy][%s] %s\n' "${DEPLOY_ENV}" "$1"
@@ -35,15 +35,11 @@ load_environment() {
   [[ -f "${ENV_FILE}" ]] || fail "Missing environment file: ${ENV_FILE}"
 
   set -a
-  if [[ -f ".env" ]]; then
-    # shellcheck disable=SC1091
-    source ".env"
-  fi
   # shellcheck disable=SC1090
   source "${ENV_FILE}"
   set +a
 
-  export NODE_ENV=production
+  export NODE_ENV=development
   export APP_ENV="${DEPLOY_ENV}"
   export PORT="${PORT:-3000}"
   export HEALTH_CHECK_URL="${HEALTH_CHECK_URL:-http://127.0.0.1:${PORT}/health/ready}"
@@ -135,7 +131,7 @@ run_health_check() {
 }
 
 main() {
-  log "Starting staging deployment in $(pwd)."
+  log "Starting development deployment in $(pwd)."
 
   guard_branch
 
@@ -157,7 +153,7 @@ main() {
   reload_pm2
   run_health_check
 
-  log "Staging deployment completed successfully."
+  log "Development deployment completed successfully."
 }
 
 main "$@"

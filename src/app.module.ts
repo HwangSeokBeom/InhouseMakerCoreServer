@@ -7,6 +7,7 @@ import { AppConfigModule } from './app-config/app-config.module';
 import { AuthModule } from './auth/auth.module';
 import { BlocksModule } from './blocks/blocks.module';
 import { envValidationSchema } from './config/env.validation';
+import { resolveEnvFilePath } from './config/runtime-env';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 import { GroupModule } from './groups/groups.module';
@@ -29,7 +30,7 @@ import { UserModule } from './users/users.module';
     ConfigModule.forRoot({
       isGlobal: true,
       cache: true,
-      envFilePath: [`.env.${process.env.NODE_ENV ?? 'development'}`],
+      envFilePath: [resolveEnvFilePath()],
       validationSchema: envValidationSchema,
     }),
     PrismaModule,
