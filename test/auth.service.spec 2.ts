@@ -337,28 +337,6 @@ describe('AuthService', () => {
     expect(prisma.state.authIdentities[0].passwordHash).not.toBe('Password1');
   });
 
-  it('stores marketing consent as false when agreedToMarketing is omitted on signup', async () => {
-    const { service, prisma } = createService();
-
-    await service.signupWithEmail({
-      email: 'nomarketing@example.com',
-      password: 'Password1',
-      nickname: 'NoMarketing',
-      agreedToTerms: true,
-      agreedToPrivacy: true,
-    });
-
-    expect(prisma.user.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          termsAgreedAt: expect.any(Date),
-          privacyAgreedAt: expect.any(Date),
-          marketingOptInAt: null,
-        }),
-      }),
-    );
-  });
-
   it('fails signup when the email format is invalid', async () => {
     const { service } = createService();
 

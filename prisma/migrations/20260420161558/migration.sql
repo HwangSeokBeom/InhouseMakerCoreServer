@@ -1,0 +1,5 @@
+-- RenameIndex
+ALTER INDEX "riot_match_participant_summaries_puuid_champion_id_played_at_id" RENAME TO "riot_match_participant_summaries_puuid_champion_id_played_a_idx";
+
+-- RenameIndex
+ALTER INDEX "riot_match_participant_summaries_puuid_champion_key_played_at_i" RENAME TO "riot_match_participant_summaries_puuid_champion_key_played__idx";

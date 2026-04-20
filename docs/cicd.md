@@ -74,13 +74,16 @@ GitHub repository의 `Settings -> Environments` 에서 아래 두 environment를
 
 선택값:
 
-- `APPLE_CLIENT_ID`
-- `APPLE_AUDIENCE`
-- `GOOGLE_CLIENT_ID`
-- `GOOGLE_AUDIENCE`
+- `APPLE_AUDIENCE` (legacy fallback only)
+- `GOOGLE_AUDIENCE` (legacy fallback only)
 - `HEALTH_CHECK_URL`: 기본값은 `http://127.0.0.1:${PORT}/health/ready`
 - `HEALTH_CHECK_MAX_ATTEMPTS`
 - `HEALTH_CHECK_DELAY_SECONDS`
+
+인증 계약 기준으로는 아래 두 값은 사실상 필수로 본다.
+
+- `APPLE_CLIENT_ID`
+- `GOOGLE_CLIENT_ID`
 
 development 배포는 런타임 `NODE_ENV=development`, production 배포는 `NODE_ENV=production` 으로 실행된다. `APP_ENV` 를 함께 쓰는 경우에도 `development`, `production` 만 사용한다.
 

@@ -1,4 +1,6 @@
-import { ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+
+import { AuthProviderResponse } from '../../auth/dto/auth.dto';
 
 export class PublicAppConfigResponseDto {
   @ApiPropertyOptional({ nullable: true })
@@ -12,4 +14,7 @@ export class PublicAppConfigResponseDto {
 
   @ApiPropertyOptional({ nullable: true })
   appMinimumVersion!: string | null;
+
+  @ApiProperty({ enum: AuthProviderResponse, isArray: true })
+  supportedAuthProviders!: AuthProviderResponse[];
 }

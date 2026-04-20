@@ -36,13 +36,7 @@ export class GoogleIdentityTokenVerifierService {
   ) {}
 
   async verifyIdentityToken(identityToken: string): Promise<VerifiedGoogleIdentity> {
-    const audience =
-      this.configService.get<string>('GOOGLE_AUDIENCE') ??
-      this.configService.get<string>('GOOGLE_CLIENT_ID');
-
-    if (!audience) {
-      throw new ServiceUnavailableException('Google login audience is not configured.');
-    }
+    const audience = this.configService.getOrThrow<string>('GOOGLE_CLIENT_ID');
 
     const decoded = jwt.decode(identityToken, { complete: true });
     if (!decoded || typeof decoded !== 'object' || !('header' in decoded)) {

@@ -1,6 +1,14 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { AuthProvider, UserStatus } from '@prisma/client';
-import { IsBoolean, IsString } from 'class-validator';
+import {
+  IsBoolean,
+  IsDefined,
+  IsEmail,
+  IsOptional,
+  IsString,
+  MaxLength,
+  MinLength,
+} from 'class-validator';
 
 export enum AuthProviderResponse {
   EMAIL = 'email',
@@ -39,33 +47,42 @@ export const normalizeAuthProviders = (
 
 export class EmailSignupDto {
   @ApiProperty()
-  @IsString()
+  @IsEmail()
   email!: string;
 
-  @ApiProperty()
+  @ApiProperty({ minLength: 8, maxLength: 72 })
   @IsString()
+  @MinLength(8)
+  @MaxLength(72)
   password!: string;
 
-  @ApiProperty()
+  @ApiProperty({ minLength: 2, maxLength: 24 })
   @IsString()
+  @MinLength(2)
+  @MaxLength(24)
   nickname!: string;
 
-  @ApiProperty()
-  @IsBoolean()
+  @ApiProperty({ description: 'Required terms consent. Must be true for signup.' })
+  @IsDefined({ message: 'agreedToTerms is required.' })
+  @IsBoolean({ message: 'agreedToTerms must be a boolean value.' })
   agreedToTerms!: boolean;
 
-  @ApiProperty()
-  @IsBoolean()
+  @ApiProperty({ description: 'Required privacy consent. Must be true for signup.' })
+  @IsDefined({ message: 'agreedToPrivacy is required.' })
+  @IsBoolean({ message: 'agreedToPrivacy must be a boolean value.' })
   agreedToPrivacy!: boolean;
 
-  @ApiProperty()
-  @IsBoolean()
-  agreedToMarketing!: boolean;
+  @ApiPropertyOptional({
+    description: 'Optional marketing consent flag. Omit or set false when the user does not opt in.',
+  })
+  @IsOptional()
+  @IsBoolean({ message: 'agreedToMarketing must be a boolean value.' })
+  agreedToMarketing?: boolean;
 }
 
 export class EmailLoginDto {
   @ApiProperty()
-  @IsString()
+  @IsEmail()
   email!: string;
 
   @ApiProperty()
@@ -75,13 +92,17 @@ export class EmailLoginDto {
 
 export class AppleLoginDto {
   @ApiProperty()
-  @IsString()
+  @IsDefined({ message: 'identityToken is required.' })
+  @IsString({ message: 'identityToken must be a string.' })
+  @MinLength(1, { message: 'identityToken must not be empty.' })
   identityToken!: string;
 }
 
 export class GoogleLoginDto {
   @ApiProperty()
-  @IsString()
+  @IsDefined({ message: 'identityToken is required.' })
+  @IsString({ message: 'identityToken must be a string.' })
+  @MinLength(1, { message: 'identityToken must not be empty.' })
   identityToken!: string;
 }
 

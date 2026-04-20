@@ -23,9 +23,9 @@ export interface AppConfig {
   RIOT_MATCH_HISTORY_EXTRA_PAGES_PER_SYNC: number;
   RIOT_MATCH_DETAIL_BATCH_SIZE: number;
   RIOT_SYNC_STALE_MS: number;
-  APPLE_CLIENT_ID?: string;
+  APPLE_CLIENT_ID: string;
   APPLE_AUDIENCE?: string;
-  GOOGLE_CLIENT_ID?: string;
+  GOOGLE_CLIENT_ID: string;
   GOOGLE_AUDIENCE?: string;
   UPLOAD_DIR?: string;
   UPLOAD_BASE_URL?: string;
@@ -57,9 +57,9 @@ export const envValidationSchema = Joi.object<AppConfig>({
   RIOT_MATCH_HISTORY_EXTRA_PAGES_PER_SYNC: Joi.number().integer().min(0).max(5).default(1),
   RIOT_MATCH_DETAIL_BATCH_SIZE: Joi.number().integer().min(1).max(20).default(5),
   RIOT_SYNC_STALE_MS: Joi.number().integer().min(60_000).default(900_000),
-  APPLE_CLIENT_ID: Joi.string().optional(),
+  APPLE_CLIENT_ID: Joi.string().required(),
   APPLE_AUDIENCE: Joi.string().optional(),
-  GOOGLE_CLIENT_ID: Joi.string().optional(),
+  GOOGLE_CLIENT_ID: Joi.string().required(),
   GOOGLE_AUDIENCE: Joi.string().optional(),
   UPLOAD_DIR: Joi.string().default('uploads'),
   UPLOAD_BASE_URL: Joi.string().uri().optional(),

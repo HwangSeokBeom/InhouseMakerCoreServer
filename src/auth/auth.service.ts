@@ -94,17 +94,37 @@ export class AuthService {
     });
   }
 
+  async rejectLegacyAuthRoute(
+    route: string,
+    replacementPath?: string,
+    provider: AuthProvider = AuthProvider.EMAIL,
+  ): Promise<never> {
+    throw new AuthException(HttpStatus.GONE, AuthErrorCode.LEGACY_AUTH_ROUTE_DISABLED, {
+      message: replacementPath
+        ? `Legacy auth route is disabled. Use POST ${replacementPath}.`
+        : 'Legacy auth route is disabled. Use the documented endpoint.',
+      provider,
+      details: {
+        route,
+        replacementPath,
+        provider,
+        supportedProviders: SUPPORTED_AUTH_PROVIDERS,
+      },
+    });
+  }
+
   async signupWithEmail(dto: EmailSignupDto): Promise<AuthTokensResponseDto> {
     const email = this.normalizeEmail(dto.email);
     const password = dto.password ?? '';
     const nickname = this.normalizeNickname(dto.nickname);
+    const agreedToMarketing = dto.agreedToMarketing === true;
 
     this.logSignupDebug('request_received', {
       email,
       nickname,
       agreedToTerms: dto.agreedToTerms,
       agreedToPrivacy: dto.agreedToPrivacy,
-      agreedToMarketing: dto.agreedToMarketing,
+      agreedToMarketing,
     });
 
     try {
@@ -125,7 +145,7 @@ export class AuthService {
             status: UserStatus.ACTIVE,
             termsAgreedAt: now,
             privacyAgreedAt: now,
-            marketingOptInAt: dto.agreedToMarketing ? now : null,
+            marketingOptInAt: agreedToMarketing ? now : null,
             powerProfile: {
               create: {
                 version: 'v1',
@@ -800,7 +820,7 @@ export class AuthService {
       return;
     }
 
-    this.logger.debug(`[signup/email] ${event} ${JSON.stringify(details)}`);
+    this.logger.debug(`[signup] ${event} ${JSON.stringify(details)}`);
   }
 
   private resolveErrorCode(error: unknown): string {

@@ -69,22 +69,22 @@ export class AuthController {
     return this.authService.rejectEmailAuthDisabled();
   }
 
-  @Post('signup/email')
+  @Post('signup')
   @UseGuards(PublicThrottleGuard)
-  @PublicThrottle({ scope: 'auth-signup-email', limit: 10, windowSeconds: 60 })
+  @PublicThrottle({ scope: 'auth-signup', limit: 10, windowSeconds: 60 })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Create an email account and return auth tokens.' })
   @ApiOkResponse({ type: AuthTokensResponseDto })
-  signupEmail(@Body() dto: EmailSignupDto): Promise<AuthTokensResponseDto> {
+  signup(@Body() dto: EmailSignupDto): Promise<AuthTokensResponseDto> {
     return this.authService.signupWithEmail(dto);
   }
 
-  @Post('signup')
+  @Post('signup/email')
   @HttpCode(HttpStatus.GONE)
-  @ApiOperation({ summary: 'Deprecated signup endpoint.', deprecated: true })
+  @ApiOperation({ summary: 'Legacy deprecated signup alias. Use POST /auth/signup.', deprecated: true })
   @ApiGoneResponse({ type: DisabledAuthResponseDto })
-  signup(@Body() _body: unknown): Promise<never> {
-    return this.authService.rejectEmailAuthDisabled();
+  signupEmailLegacy(@Body() _body: unknown): Promise<never> {
+    return this.authService.rejectLegacyAuthRoute('/auth/signup/email', '/auth/signup');
   }
 
   @Post('login/email')

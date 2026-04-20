@@ -12,7 +12,7 @@ describe('AppleIdentityTokenVerifierService', () => {
   });
   const jwk = publicKey.export({ format: 'jwk' });
 
-  const createService = (configuredAudience = audience) =>
+  const createService = (overrides: Record<string, string | undefined> = {}) =>
     new AppleIdentityTokenVerifierService(
       {
         get: jest.fn().mockReturnValue(
@@ -24,9 +24,14 @@ describe('AppleIdentityTokenVerifierService', () => {
         ),
       } as any,
       {
-        get: jest.fn((key: string) =>
-          key === 'APPLE_AUDIENCE' ? configuredAudience : undefined,
-        ),
+        get: jest.fn((key: string) => {
+          const config = {
+            APPLE_CLIENT_ID: audience,
+            APPLE_AUDIENCE: 'replace_me',
+            ...overrides,
+          };
+          return config[key as keyof typeof config];
+        }),
       } as any,
     );
 
@@ -55,8 +60,31 @@ describe('AppleIdentityTokenVerifierService', () => {
     });
   });
 
+  it('prefers APPLE_CLIENT_ID over a legacy APPLE_AUDIENCE fallback', async () => {
+    const service = createService();
+    const token = jwt.sign(
+      {
+        sub: 'apple-user-1',
+        email: 'apple@example.com',
+      },
+      privateKey,
+      {
+        algorithm: 'RS256',
+        keyid: 'apple-kid',
+        issuer,
+        audience,
+        expiresIn: '1h',
+      },
+    );
+
+    await expect(service.verifyIdentityToken(token)).resolves.toMatchObject({
+      sub: 'apple-user-1',
+      email: 'apple@example.com',
+    });
+  });
+
   it('rejects a token when audience validation fails', async () => {
-    const service = createService('com.other.audience');
+    const service = createService({ APPLE_CLIENT_ID: 'com.other.audience' });
     const token = jwt.sign(
       { sub: 'apple-user-1' },
       privateKey,

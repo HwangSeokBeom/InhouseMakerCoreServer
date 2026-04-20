@@ -39,8 +39,8 @@ export class AppleIdentityTokenVerifierService {
 
   async verifyIdentityToken(identityToken: string): Promise<VerifiedAppleIdentity> {
     const audience =
-      this.configService.get<string>('APPLE_AUDIENCE') ??
-      this.configService.get<string>('APPLE_CLIENT_ID');
+      this.configService.get<string>('APPLE_CLIENT_ID') ??
+      this.configService.get<string>('APPLE_AUDIENCE');
 
     if (!audience) {
       throw new ServiceUnavailableException('Apple login audience is not configured.');
