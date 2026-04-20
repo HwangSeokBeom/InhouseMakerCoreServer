@@ -33,9 +33,20 @@ import {
   RiotApiError,
   RiotSummonerResponse,
 } from './riot-api.client';
+import { RiotMatchHistoryRepository } from './riot-match-history.repository';
 import { parseRiotIdentifier, resolveRiotRouting } from './riot-routing.util';
 
 type MatchParticipant = Record<string, unknown>;
+type MatchDetail = Record<string, unknown>;
+type SyncPhase =
+  | 'queued'
+  | 'start'
+  | 'summoner_lookup'
+  | 'match_ids'
+  | 'match_details'
+  | 'ranked_lookup'
+  | 'finalize'
+  | 'failed';
 type RankedEntry = {
   queueType: string;
   tier: string;
@@ -48,7 +59,7 @@ type RankedEntry = {
 type RiotSyncWarning = {
   code: string;
   message: string;
-  stage: 'league_lookup';
+  stage: 'league_lookup' | 'match_details';
   details?: Record<string, unknown>;
 };
 
@@ -71,6 +82,17 @@ type RiotAccountDuplicateMatch = {
   isPrimary: boolean;
   puuid: string;
 };
+type ChampionQueueCategory =
+  | 'RANKED_SOLO'
+  | 'RANKED_FLEX'
+  | 'NORMAL'
+  | 'CUSTOM'
+  | 'IGNORED';
+type MatchHistoryPageRequest = {
+  start: number;
+  count: number;
+  kind: 'latest' | 'backfill';
+};
 
 @Injectable()
 export class RiotService {
@@ -82,6 +104,7 @@ export class RiotService {
     private readonly queueService: QueueService,
     private readonly auditLogService: AuditLogService,
     private readonly configService: ConfigService,
+    private readonly riotMatchHistoryRepository: RiotMatchHistoryRepository,
   ) {}
 
   async createForUser(
@@ -242,13 +265,16 @@ export class RiotService {
       where: this.buildListVisibleRiotAccountWhere(userId),
       orderBy: [{ isPrimary: 'desc' }, { createdAt: 'asc' }],
     });
+    const hydratedItems = await Promise.all(
+      items.map((item) => this.recoverStaleRunningSync(item)),
+    );
     this.logAccountEvent('list_query_result_count', {
       userId,
-      count: items.length,
+      count: hydratedItems.length,
     });
 
     return {
-      items: items.map((item) => this.toResponse(item)),
+      items: hydratedItems.map((item) => this.toResponse(item)),
     };
   }
 
@@ -295,11 +321,12 @@ export class RiotService {
       throw new NotFoundException('Riot account not found.');
     }
 
-    return this.toSyncStatusResponse(account);
+    return this.toSyncStatusResponse(await this.recoverStaleRunningSync(account));
   }
 
   async syncAccount(
     riotAccountId: string,
+    requestedSyncType: 'initial' | 'refresh' = 'refresh',
     attemptsMade = 0,
     maxAttempts = 1,
   ): Promise<void> {
@@ -315,17 +342,45 @@ export class RiotService {
     }
 
     const routing = this.resolveRoutingForStoredAccount(account.region);
+    const syncType =
+      requestedSyncType === 'initial' || account.lastSyncSucceededAt === null
+        ? 'initial'
+        : 'refresh';
+    const startedAt = new Date();
 
     await this.prismaService.riotAccount.update({
       where: { id: riotAccountId },
       data: {
         syncStatus: RiotSyncStatus.RUNNING,
+        syncPhase: 'start',
+        lastSyncProgressAt: startedAt,
+        lastSyncError: null,
+        lastSyncErrorCode: null,
+        lastSyncErrorMessage: null,
+        lastSyncWarningCode: null,
+        lastSyncWarningMessage: null,
+        processedMatchCount: 0,
+        queuedMatchCount: 0,
+        hasUsableSnapshot: Boolean(account.lastSyncedAt),
       },
+    });
+    this.logSyncStateTransition(riotAccountId, account.syncStatus, RiotSyncStatus.RUNNING, {
+      syncType,
+    });
+    this.logSyncDebug('start', {
+      riotAccountId,
+      syncType,
+      matchHistoryNextStart: account.matchHistoryNextStart,
+      matchHistoryComplete: account.matchHistoryComplete,
     });
 
     try {
       const warnings: RiotSyncWarning[] = [];
 
+      await this.markSyncProgress({
+        riotAccountId,
+        phase: 'summoner_lookup',
+      });
       this.logSyncStage('summoner_lookup_prepare', {
         riotAccountId,
         accountPuuid: account.puuid,
@@ -352,30 +407,37 @@ export class RiotService {
         accountPuuid: account.puuid,
         accountRegion: routing.accountRegion,
       });
-      const recentMatchIds = await this.riotApiClient.getRecentMatchIds(
-        account.puuid,
-        20,
-        routing.accountRegion,
-      );
+      const matchHistorySync = await this.syncMatchHistory({
+        userId: account.userId,
+        riotAccountId,
+        accountPuuid: account.puuid,
+        matchHistoryNextStart: account.matchHistoryNextStart,
+        matchHistoryComplete: account.matchHistoryComplete,
+        accountRegion: routing.accountRegion,
+        syncType,
+      });
       this.logSyncStage('match_ids_lookup_resolved', {
         riotAccountId,
         accountPuuid: account.puuid,
-        matchIdCount: recentMatchIds.length,
+        matchIdCount: matchHistorySync.recentMatchIds.length,
+        backfillNextStart: matchHistorySync.cursorUpdate.matchHistoryNextStart,
+        backfillComplete: matchHistorySync.cursorUpdate.matchHistoryComplete,
       });
-
-      const recentMatches = await Promise.all(
-        recentMatchIds
-          .slice(0, 10)
-          .map((matchId) =>
-            this.riotApiClient.getMatchDetail(matchId, routing.accountRegion),
-          ),
-      );
+      if (matchHistorySync.warning) {
+        warnings.push(matchHistorySync.warning);
+      }
+      this.logMatchHistoryCoverage({
+        userId: account.userId,
+        stored: matchHistorySync.storedMatchCount,
+        nextStart: matchHistorySync.cursorUpdate.matchHistoryNextStart,
+        complete: matchHistorySync.cursorUpdate.matchHistoryComplete,
+      });
 
       const resolvedSummonerId = this.resolveEncryptedSummonerId({
         accountPuuid: account.puuid,
         summoner,
         storedSummonerId: account.summonerId,
-        recentMatches,
+        recentMatches: matchHistorySync.recentMatches,
       });
       this.logSyncStage('ranked_lookup_input_resolved', {
         riotAccountId,
@@ -385,6 +447,12 @@ export class RiotService {
         resolvedSummonerIdSource: resolvedSummonerId.source,
       });
 
+      await this.markSyncProgress({
+        riotAccountId,
+        phase: 'ranked_lookup',
+        processedMatchCount: matchHistorySync.processedMatchCount,
+        queuedMatchCount: matchHistorySync.queuedMatchCount,
+      });
       const rankedSync = await this.lookupRankedEntries({
         riotAccountId,
         accountPuuid: account.puuid,
@@ -399,7 +467,11 @@ export class RiotService {
       const rankedSummary = rankedSync.entries
         ? this.buildRankedSummary(rankedSync.entries)
         : null;
-      const recentSummary = this.buildRecentSummary(account.puuid, recentMatches, summoner);
+      const recentSummary = this.buildRecentSummary(
+        account.puuid,
+        matchHistorySync.recentMatches,
+        summoner,
+      );
       const syncedAt = new Date();
       const primaryWarning = this.pickPrimaryWarning(warnings);
       const nextSyncStatus = primaryWarning
@@ -411,13 +483,20 @@ export class RiotService {
         summonerLevel: summoner.summonerLevel,
         summonerRevisionDate: summoner.revisionDate,
         syncStatus: nextSyncStatus,
+        syncPhase: 'finalize' as SyncPhase,
         lastSyncedAt: syncedAt,
         lastSyncSucceededAt: syncedAt,
+        lastSyncProgressAt: syncedAt,
         lastSyncError: null,
         lastSyncErrorCode: null,
         lastSyncErrorMessage: null,
         lastSyncWarningCode: primaryWarning?.code ?? null,
         lastSyncWarningMessage: primaryWarning?.message ?? null,
+        processedMatchCount: matchHistorySync.processedMatchCount,
+        queuedMatchCount: matchHistorySync.queuedMatchCount,
+        hasUsableSnapshot: matchHistorySync.hasUsableSnapshot,
+        matchHistoryNextStart: matchHistorySync.cursorUpdate.matchHistoryNextStart,
+        matchHistoryComplete: matchHistorySync.cursorUpdate.matchHistoryComplete,
       };
       const transactionOperations = [
         this.prismaService.riotAccount.update({
@@ -453,6 +532,21 @@ export class RiotService {
       }
 
       await this.prismaService.$transaction(transactionOperations);
+      this.logSyncStateTransition(riotAccountId, RiotSyncStatus.RUNNING, nextSyncStatus, {
+        syncType,
+        warningCode: primaryWarning?.code ?? null,
+      });
+      this.logSyncDebug('finalize_success', {
+        riotAccountId,
+        syncType,
+        syncStatus: nextSyncStatus,
+        usableSnapshot: matchHistorySync.hasUsableSnapshot,
+        processedMatchCount: matchHistorySync.processedMatchCount,
+        queuedMatchCount: matchHistorySync.queuedMatchCount,
+        matchHistoryNextStart: matchHistorySync.cursorUpdate.matchHistoryNextStart,
+        matchHistoryComplete: matchHistorySync.cursorUpdate.matchHistoryComplete,
+        warningCode: primaryWarning?.code ?? null,
+      });
       this.logSyncStage('sync_finalize', {
         riotAccountId,
         syncStatus: nextSyncStatus,
@@ -509,13 +603,27 @@ export class RiotService {
         where: { id: riotAccountId },
         data: {
           syncStatus: syncError.nextStatus,
+          syncPhase: 'failed',
           lastSyncFailedAt: syncError.failedAt,
+          lastSyncProgressAt: syncError.failedAt,
           lastSyncError: syncError.message,
           lastSyncErrorCode: syncError.code,
           lastSyncErrorMessage: syncError.message,
           lastSyncWarningCode: null,
           lastSyncWarningMessage: null,
+          hasUsableSnapshot: Boolean(account.lastSyncedAt),
         },
+      });
+      this.logSyncStateTransition(riotAccountId, RiotSyncStatus.RUNNING, syncError.nextStatus, {
+        syncType,
+        errorCode: syncError.code,
+      });
+      this.logSyncDebug('finalize_failure', {
+        riotAccountId,
+        syncType,
+        code: syncError.code,
+        message: syncError.message,
+        nextStatus: syncError.nextStatus,
       });
 
       await this.auditLogService.create({
@@ -659,20 +767,21 @@ export class RiotService {
       throw new NotFoundException('Riot account not found.');
     }
 
-    return this.toResponse(account);
+    return this.toResponse(await this.recoverStaleRunningSync(account));
   }
 
   private async queueSync(
     riotAccountId: string,
     type: 'initial' | 'refresh',
   ): Promise<boolean> {
-    const account = await this.prismaService.riotAccount.findUnique({
+    const currentAccount = await this.prismaService.riotAccount.findUnique({
       where: { id: riotAccountId },
     });
 
-    if (!account) {
+    if (!currentAccount) {
       throw new NotFoundException('Riot account not found.');
     }
+    const account = await this.recoverStaleRunningSync(currentAccount);
 
     this.logAccountEvent('sync_requested', {
       userId: account.userId,
@@ -695,13 +804,21 @@ export class RiotService {
       where: { id: riotAccountId },
       data: {
         syncStatus: RiotSyncStatus.QUEUED,
+        syncPhase: 'queued',
         lastSyncRequestedAt: new Date(),
+        lastSyncProgressAt: new Date(),
         lastSyncError: null,
         lastSyncErrorCode: null,
         lastSyncErrorMessage: null,
         lastSyncWarningCode: null,
         lastSyncWarningMessage: null,
+        processedMatchCount: 0,
+        queuedMatchCount: 0,
+        hasUsableSnapshot: Boolean(account.lastSyncedAt),
       },
+    });
+    this.logSyncStateTransition(riotAccountId, account.syncStatus, RiotSyncStatus.QUEUED, {
+      syncType: type,
     });
 
     try {
@@ -718,13 +835,19 @@ export class RiotService {
         where: { id: riotAccountId },
         data: {
           syncStatus: RiotSyncStatus.FAILED,
+          syncPhase: 'failed',
           lastSyncFailedAt: new Date(),
+          lastSyncProgressAt: new Date(),
           lastSyncError: message,
           lastSyncErrorCode: 'QUEUE_ENQUEUE_FAILED',
           lastSyncErrorMessage: message,
           lastSyncWarningCode: null,
           lastSyncWarningMessage: null,
         },
+      });
+      this.logSyncStateTransition(riotAccountId, RiotSyncStatus.QUEUED, RiotSyncStatus.FAILED, {
+        syncType: type,
+        reason: 'queue_enqueue_failed',
       });
 
       throw new ServiceUnavailableException('Unable to enqueue Riot sync job.');
@@ -957,6 +1080,597 @@ export class RiotService {
     return null;
   }
 
+  private async syncMatchHistory(input: {
+    userId: string;
+    riotAccountId: string;
+    accountPuuid: string;
+    matchHistoryNextStart: number;
+    matchHistoryComplete: boolean;
+    accountRegion: string;
+    syncType: 'initial' | 'refresh';
+  }): Promise<{
+    recentMatchIds: string[];
+    recentMatches: MatchDetail[];
+    processedMatchCount: number;
+    queuedMatchCount: number;
+    hasUsableSnapshot: boolean;
+    storedMatchCount: number;
+    warning: RiotSyncWarning | null;
+    cursorUpdate: {
+      matchHistoryNextStart: number;
+      matchHistoryComplete: boolean;
+    };
+  }> {
+    const pageSize = this.configService.get<number>('RIOT_MATCH_HISTORY_PAGE_SIZE', 100);
+    const initialSyncMatchCount = this.configService.get<number>(
+      'RIOT_INITIAL_SYNC_MATCH_COUNT',
+      25,
+    );
+    const extraPages =
+      input.syncType === 'initial'
+        ? 0
+        : this.configService.get<number>(
+            'RIOT_MATCH_HISTORY_EXTRA_PAGES_PER_SYNC',
+            1,
+          );
+    const latestPageSize = input.syncType === 'initial' ? initialSyncMatchCount : pageSize;
+    const pageRequests = this.buildMatchHistoryPageRequests({
+      currentNextStart: input.matchHistoryNextStart,
+      currentComplete: input.matchHistoryComplete,
+      latestPageSize,
+      backfillPageSize: pageSize,
+      extraPages,
+    });
+    const pageResults = new Map<number, string[]>();
+
+    await this.markSyncProgress({
+      riotAccountId: input.riotAccountId,
+      phase: 'match_ids',
+    });
+
+    for (const request of pageRequests) {
+      const ids = await this.riotApiClient.getRecentMatchIds(
+        input.accountPuuid,
+        request.count,
+        request.start,
+        input.accountRegion,
+      );
+      pageResults.set(request.start, ids);
+      this.logSyncDebug('match_ids_loaded', {
+        riotAccountId: input.riotAccountId,
+        phase: 'match_ids',
+        pageKind: request.kind,
+        start: request.start,
+        count: ids.length,
+        requestedCount: request.count,
+        nextStartCandidate: request.start + ids.length,
+      });
+    }
+
+    const recentMatchIds = pageResults.get(0) ?? [];
+    const recentSummaryTargetCount =
+      input.syncType === 'initial' ? recentMatchIds.length : Math.min(10, recentMatchIds.length);
+    const recentSummaryMatchIds = recentMatchIds.slice(0, recentSummaryTargetCount);
+    const allMatchIds = [...new Set([...pageResults.values()].flat())];
+    const knownMatchIds = await this.riotMatchHistoryRepository.findKnownMatchIds(
+      input.accountPuuid,
+      allMatchIds,
+    );
+    const priorityMatchIds = [...new Set(recentSummaryMatchIds)];
+    const priorityMatchIdSet = new Set(priorityMatchIds);
+    const backgroundMatchIds = allMatchIds.filter(
+      (matchId) => !priorityMatchIdSet.has(matchId) && !knownMatchIds.has(matchId),
+    );
+    const queuedMatchCount = priorityMatchIds.length + backgroundMatchIds.length;
+    const progress = {
+      processedMatchCount: 0,
+      queuedMatchCount,
+    };
+
+    await this.markSyncProgress({
+      riotAccountId: input.riotAccountId,
+      phase: 'match_details',
+      processedMatchCount: progress.processedMatchCount,
+      queuedMatchCount: progress.queuedMatchCount,
+    });
+
+    const priorityDetails = await this.fetchMatchDetailsWithProgress({
+      riotAccountId: input.riotAccountId,
+      matchIds: priorityMatchIds,
+      accountRegion: input.accountRegion,
+      progress,
+      batchLabel: 'priority_recent',
+    });
+    const backgroundDetails = await this.fetchMatchDetailsWithProgress({
+      riotAccountId: input.riotAccountId,
+      matchIds: backgroundMatchIds,
+      accountRegion: input.accountRegion,
+      progress,
+      batchLabel: 'history_backfill',
+    });
+    const detailMap = new Map<string, MatchDetail>([
+      ...priorityDetails.details.entries(),
+      ...backgroundDetails.details.entries(),
+    ]);
+    const recentMatches = recentSummaryMatchIds.flatMap((matchId) => {
+      const detail = detailMap.get(matchId);
+      return detail ? [detail] : [];
+    });
+    const minimumUsableMatches = this.calculateMinimumUsableMatches(recentSummaryMatchIds.length);
+    const hasUsableSnapshot =
+      recentSummaryMatchIds.length === 0 || recentMatches.length >= minimumUsableMatches;
+
+    if (!hasUsableSnapshot) {
+      throw new RiotApiError(
+        'Riot recent match details could not be loaded enough to build a usable snapshot.',
+        'RIOT_MATCH_DETAIL_INCOMPLETE',
+        HttpStatus.SERVICE_UNAVAILABLE,
+        true,
+      );
+    }
+
+    const persistResult = await this.persistMatchHistory({
+      puuid: input.accountPuuid,
+      allMatchIds,
+      knownMatchIds,
+      detailMap,
+    });
+    const resolvedMatchIds = new Set<string>([
+      ...knownMatchIds,
+      ...detailMap.keys(),
+    ]);
+    const failedMatchCount =
+      priorityDetails.failedMatchIds.length + backgroundDetails.failedMatchIds.length;
+    const warning =
+      failedMatchCount > 0
+        ? this.buildMatchDetailWarning(
+            'RIOT_MATCH_DETAIL_PARTIAL',
+            'Some Riot match details could not be loaded during sync.',
+            {
+              riotAccountId: input.riotAccountId,
+              syncType: input.syncType,
+              failedMatchCount,
+              recentRequestedCount: recentSummaryMatchIds.length,
+              recentResolvedCount: recentMatches.length,
+              storedMatchCount: persistResult.storedMatchCount,
+            },
+          )
+        : null;
+    this.logSyncDebug('progress', {
+      riotAccountId: input.riotAccountId,
+      phase: 'match_details',
+      processedMatches: progress.processedMatchCount,
+      queuedMatches: progress.queuedMatchCount,
+      storedMatches: persistResult.storedMatchCount,
+      unresolvedMatches: persistResult.unresolvedMatchIds.length,
+      nextStart: input.matchHistoryNextStart,
+    });
+
+    return {
+      recentMatchIds,
+      recentMatches,
+      processedMatchCount: progress.processedMatchCount,
+      queuedMatchCount: progress.queuedMatchCount,
+      hasUsableSnapshot,
+      storedMatchCount: persistResult.storedMatchCount,
+      warning,
+      cursorUpdate: this.advanceMatchHistoryCursor({
+        currentNextStart: input.matchHistoryNextStart,
+        currentComplete: input.matchHistoryComplete,
+        pageRequests,
+        pageResults,
+        resolvedMatchIds,
+      }),
+    };
+  }
+
+  private buildMatchHistoryPageRequests(
+    args: {
+      currentNextStart: number;
+      currentComplete: boolean;
+      latestPageSize: number;
+      backfillPageSize: number;
+      extraPages: number;
+    },
+  ): MatchHistoryPageRequest[] {
+    const requests = new Map<number, MatchHistoryPageRequest>();
+    requests.set(0, {
+      start: 0,
+      count: args.latestPageSize,
+      kind: 'latest',
+    });
+
+    if (args.currentComplete) {
+      return [...requests.values()];
+    }
+
+    let cursor = args.currentNextStart === 0 ? args.latestPageSize : args.currentNextStart;
+    for (let index = 0; index < args.extraPages; index += 1) {
+      requests.set(cursor, {
+        start: cursor,
+        count: args.backfillPageSize,
+        kind: 'backfill',
+      });
+      cursor += args.backfillPageSize;
+    }
+
+    return [...requests.values()].sort((left, right) => left.start - right.start);
+  }
+
+  private async fetchMatchDetailsWithProgress(input: {
+    riotAccountId: string;
+    matchIds: string[];
+    accountRegion: string;
+    progress: {
+      processedMatchCount: number;
+      queuedMatchCount: number;
+    };
+    batchLabel: 'priority_recent' | 'history_backfill';
+  }): Promise<{
+    details: Map<string, MatchDetail>;
+    failedMatchIds: string[];
+  }> {
+    if (input.matchIds.length === 0) {
+      return {
+        details: new Map<string, MatchDetail>(),
+        failedMatchIds: [],
+      };
+    }
+
+    const batchSize = this.configService.get<number>('RIOT_MATCH_DETAIL_BATCH_SIZE', 10);
+    const details = new Map<string, MatchDetail>();
+    const failedMatchIds: string[] = [];
+
+    for (const chunk of this.chunk(input.matchIds, batchSize)) {
+      this.logSyncDebug('detail_batch_started', {
+        riotAccountId: input.riotAccountId,
+        phase: 'match_details',
+        batchLabel: input.batchLabel,
+        batchSize: chunk.length,
+        concurrency: batchSize,
+      });
+      const results = await Promise.allSettled(
+        chunk.map((matchId) => this.riotApiClient.getMatchDetail(matchId, input.accountRegion)),
+      );
+      let batchSuccess = 0;
+      let batchFailed = 0;
+
+      results.forEach((result, index) => {
+        const matchId = chunk[index];
+        if (result.status === 'fulfilled') {
+          details.set(matchId, result.value);
+          batchSuccess += 1;
+          return;
+        }
+
+        failedMatchIds.push(matchId);
+        batchFailed += 1;
+        const reason =
+          result.reason instanceof Error ? result.reason.message : 'unknown_match_detail_error';
+        this.logger.warn(
+          `[riot_sync] champion_history_match_detail_skipped ${JSON.stringify(
+            this.sanitizeLogDetails({
+              matchId,
+              accountRegion: input.accountRegion,
+              reason,
+            }),
+          )}`,
+        );
+      });
+
+      input.progress.processedMatchCount += chunk.length;
+      await this.markSyncProgress({
+        riotAccountId: input.riotAccountId,
+        phase: 'match_details',
+        processedMatchCount: input.progress.processedMatchCount,
+        queuedMatchCount: input.progress.queuedMatchCount,
+      });
+      this.logSyncDebug('detail_batch_completed', {
+        riotAccountId: input.riotAccountId,
+        phase: 'match_details',
+        batchLabel: input.batchLabel,
+        batchSize: chunk.length,
+        success: batchSuccess,
+        failed: batchFailed,
+      });
+    }
+
+    return {
+      details,
+      failedMatchIds,
+    };
+  }
+
+  private async persistMatchHistory(input: {
+    puuid: string;
+    allMatchIds: string[];
+    knownMatchIds: Set<string>;
+    detailMap: Map<string, MatchDetail>;
+  }): Promise<{
+    storedMatchCount: number;
+    unresolvedMatchIds: string[];
+  }> {
+    if (input.allMatchIds.length === 0) {
+      return {
+        storedMatchCount: 0,
+        unresolvedMatchIds: [],
+      };
+    }
+
+    const unresolvedMatchIds = input.allMatchIds.filter(
+      (matchId) => !input.knownMatchIds.has(matchId) && !input.detailMap.has(matchId),
+    );
+    const rows = input.allMatchIds
+      .filter((matchId) => !input.knownMatchIds.has(matchId))
+      .map((matchId) => {
+        const detail = input.detailMap.get(matchId);
+        if (!detail) {
+          return null;
+        }
+
+        return this.toParticipantSummaryRow(matchId, input.puuid, detail);
+      })
+      .filter(
+        (
+          row,
+        ): row is Prisma.RiotMatchParticipantSummaryCreateManyInput => row !== null,
+      );
+
+    await this.riotMatchHistoryRepository.createParticipantSummaries(rows);
+    return {
+      storedMatchCount: rows.length,
+      unresolvedMatchIds,
+    };
+  }
+
+  private toParticipantSummaryRow(
+    matchId: string,
+    puuid: string,
+    detail: MatchDetail,
+  ): Prisma.RiotMatchParticipantSummaryCreateManyInput | null {
+    const info = (detail.info as Record<string, unknown> | undefined) ?? {};
+    const participants = Array.isArray(info.participants)
+      ? (info.participants as MatchParticipant[])
+      : [];
+    const participant = participants.find((candidate) => candidate.puuid === puuid) ?? null;
+    const queueId = this.readNullableNumber(info.queueId);
+    const gameMode = this.readNullableString(info.gameMode);
+    const gameType = this.readNullableString(info.gameType);
+    const mapId = this.readNullableNumber(info.mapId);
+    const playedAt = this.resolveMatchPlayedAt(info);
+    const queueCategory = participant
+      ? this.resolveChampionQueueCategory({ queueId, gameMode, gameType, mapId })
+      : 'IGNORED';
+    const championId = this.readNullableNumber(participant?.championId);
+    const championKey = this.normalizeChampionKey(
+      this.readNullableString(participant?.championName),
+      championId,
+    );
+    const championName = this.resolveChampionName(
+      this.readNullableString(participant?.championName),
+      championKey,
+      championId,
+    );
+
+    return {
+      riotMatchId: matchId,
+      puuid,
+      queueId,
+      queueCategory,
+      gameMode,
+      gameType,
+      mapId,
+      playedAt,
+      seasonKey: this.resolveSeasonKey(playedAt),
+      championId,
+      championKey,
+      championName,
+      kills: this.readNullableNumber(participant?.kills) ?? 0,
+      deaths: this.readNullableNumber(participant?.deaths) ?? 0,
+      assists: this.readNullableNumber(participant?.assists) ?? 0,
+      didWin: this.readNullableBoolean(participant?.win),
+    };
+  }
+
+  private resolveChampionQueueCategory(input: {
+    queueId: number | null;
+    gameMode: string | null;
+    gameType: string | null;
+    mapId: number | null;
+  }): ChampionQueueCategory {
+    if (input.queueId === 420) {
+      return 'RANKED_SOLO';
+    }
+
+    if (input.queueId === 440) {
+      return 'RANKED_FLEX';
+    }
+
+    if ([400, 430, 490].includes(input.queueId ?? -1)) {
+      return 'NORMAL';
+    }
+
+    const isSummonersRiftClassic =
+      input.mapId === 11 && input.gameMode?.toUpperCase() === 'CLASSIC';
+    if (isSummonersRiftClassic && input.gameType?.toUpperCase() === 'CUSTOM_GAME') {
+      return 'CUSTOM';
+    }
+
+    return 'IGNORED';
+  }
+
+  private normalizeChampionKey(
+    rawChampionName: string | null,
+    championId: number | null,
+  ): string | null {
+    const normalized = rawChampionName?.replace(/[^A-Za-z0-9]/g, '').trim() ?? '';
+    if (normalized.length > 0) {
+      return normalized;
+    }
+
+    if (championId !== null) {
+      return String(championId);
+    }
+
+    return null;
+  }
+
+  private resolveChampionName(
+    rawChampionName: string | null,
+    championKey: string | null,
+    championId: number | null,
+  ): string | null {
+    if (rawChampionName?.trim()) {
+      return rawChampionName.trim();
+    }
+
+    if (championKey?.trim()) {
+      return championKey.trim();
+    }
+
+    if (championId !== null) {
+      return String(championId);
+    }
+
+    return null;
+  }
+
+  private resolveMatchPlayedAt(info: Record<string, unknown>): Date {
+    const timestamps = [
+      this.readNullableNumber(info.gameEndTimestamp),
+      this.readNullableNumber(info.gameStartTimestamp),
+      this.readNullableNumber(info.gameCreation),
+    ].filter((value): value is number => value !== null && value > 0);
+
+    return timestamps.length > 0 ? new Date(timestamps[0]) : new Date(0);
+  }
+
+  private resolveSeasonKey(playedAt: Date): string {
+    return String(playedAt.getUTCFullYear());
+  }
+
+  private advanceMatchHistoryCursor(input: {
+    currentNextStart: number;
+    currentComplete: boolean;
+    pageRequests: MatchHistoryPageRequest[];
+    pageResults: Map<number, string[]>;
+    resolvedMatchIds: Set<string>;
+  }): {
+    matchHistoryNextStart: number;
+    matchHistoryComplete: boolean;
+  } {
+    if (input.currentComplete) {
+      return {
+        matchHistoryNextStart: input.currentNextStart,
+        matchHistoryComplete: true,
+      };
+    }
+
+    const latestRequest =
+      input.pageRequests.find((request) => request.start === 0) ?? {
+        start: 0,
+        count: 0,
+        kind: 'latest' as const,
+      };
+    let nextStart = input.currentNextStart;
+    const latestPage = input.pageResults.get(0) ?? [];
+
+    if (nextStart === 0) {
+      if (!this.areAllMatchIdsResolved(latestPage, input.resolvedMatchIds)) {
+        return {
+          matchHistoryNextStart: 0,
+          matchHistoryComplete: false,
+        };
+      }
+
+      if (latestPage.length < latestRequest.count) {
+        return {
+          matchHistoryNextStart: 0,
+          matchHistoryComplete: true,
+        };
+      }
+
+      nextStart = latestRequest.count;
+    }
+
+    const backfillRequests = input.pageRequests
+      .filter((request) => request.kind === 'backfill')
+      .sort((left, right) => left.start - right.start);
+
+    for (const request of backfillRequests) {
+      if (request.start !== nextStart) {
+        break;
+      }
+
+      const ids = input.pageResults.get(request.start) ?? [];
+      if (!this.areAllMatchIdsResolved(ids, input.resolvedMatchIds)) {
+        return {
+          matchHistoryNextStart: nextStart,
+          matchHistoryComplete: false,
+        };
+      }
+
+      if (ids.length < request.count) {
+        return {
+          matchHistoryNextStart: request.start + ids.length,
+          matchHistoryComplete: true,
+        };
+      }
+
+      nextStart = request.start + request.count;
+    }
+
+    return {
+      matchHistoryNextStart: nextStart,
+      matchHistoryComplete: false,
+    };
+  }
+
+  private areAllMatchIdsResolved(matchIds: string[], resolvedMatchIds: Set<string>): boolean {
+    return matchIds.every((matchId) => resolvedMatchIds.has(matchId));
+  }
+
+  private calculateMinimumUsableMatches(matchCount: number): number {
+    if (matchCount <= 0) {
+      return 0;
+    }
+
+    return Math.min(matchCount, 5);
+  }
+
+  private readNullableString(value: unknown): string | null {
+    return typeof value === 'string' && value.trim().length > 0 ? value : null;
+  }
+
+  private readNullableNumber(value: unknown): number | null {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+
+    if (typeof value === 'string' && value.trim().length > 0) {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+
+    return null;
+  }
+
+  private readNullableBoolean(value: unknown): boolean | null {
+    return typeof value === 'boolean' ? value : null;
+  }
+
+  private chunk<T>(items: T[], size: number): T[][] {
+    if (items.length === 0) {
+      return [];
+    }
+
+    const chunks: T[][] = [];
+    for (let index = 0; index < items.length; index += size) {
+      chunks.push(items.slice(index, index + size));
+    }
+    return chunks;
+  }
+
   private buildRankWarning(
     code: string,
     message: string,
@@ -966,6 +1680,19 @@ export class RiotService {
       code,
       message,
       stage: 'league_lookup',
+      details,
+    };
+  }
+
+  private buildMatchDetailWarning(
+    code: string,
+    message: string,
+    details?: Record<string, unknown>,
+  ): RiotSyncWarning {
+    return {
+      code,
+      message,
+      stage: 'match_details',
       details,
     };
   }
@@ -981,6 +1708,114 @@ export class RiotService {
       summonerLevel: summoner.summonerLevel,
       revisionDate: summoner.revisionDate?.toISOString() ?? null,
     };
+  }
+
+  private async markSyncProgress(input: {
+    riotAccountId: string;
+    phase: SyncPhase;
+    processedMatchCount?: number;
+    queuedMatchCount?: number;
+    hasUsableSnapshot?: boolean;
+  }): Promise<void> {
+    const data: Prisma.RiotAccountUpdateInput = {
+      syncPhase: input.phase,
+      lastSyncProgressAt: new Date(),
+    };
+
+    if (input.processedMatchCount !== undefined) {
+      data.processedMatchCount = input.processedMatchCount;
+    }
+    if (input.queuedMatchCount !== undefined) {
+      data.queuedMatchCount = input.queuedMatchCount;
+    }
+    if (input.hasUsableSnapshot !== undefined) {
+      data.hasUsableSnapshot = input.hasUsableSnapshot;
+    }
+
+    await this.prismaService.riotAccount.update({
+      where: { id: input.riotAccountId },
+      data,
+    });
+  }
+
+  private async recoverStaleRunningSync(account: any): Promise<any> {
+    if (account.syncStatus !== RiotSyncStatus.RUNNING) {
+      return account;
+    }
+
+    const referenceTime =
+      account.lastSyncProgressAt ?? account.lastSyncRequestedAt ?? account.updatedAt;
+    if (Date.now() - referenceTime.getTime() < this.getStaleSyncMs()) {
+      return account;
+    }
+
+    const failedAt = new Date();
+    const message = 'Riot sync stalled without progress and was marked failed.';
+    this.logSyncDebug('stale_running_detected', {
+      riotAccountId: account.id,
+      phase: 'failed',
+      lastProgressAt: referenceTime.toISOString(),
+      staleMs: this.getStaleSyncMs(),
+    });
+    const updated = await this.prismaService.riotAccount.update({
+      where: { id: account.id },
+      data: {
+        syncStatus: RiotSyncStatus.FAILED,
+        syncPhase: 'failed',
+        lastSyncFailedAt: failedAt,
+        lastSyncProgressAt: failedAt,
+        lastSyncError: message,
+        lastSyncErrorCode: 'RIOT_SYNC_STALLED',
+        lastSyncErrorMessage: message,
+        lastSyncWarningCode: null,
+        lastSyncWarningMessage: null,
+        hasUsableSnapshot: Boolean(account.lastSyncedAt),
+      },
+    });
+    this.logSyncStateTransition(account.id, RiotSyncStatus.RUNNING, RiotSyncStatus.FAILED, {
+      reason: 'stale_recovery',
+    });
+
+    return updated;
+  }
+
+  private getStaleSyncMs(): number {
+    return this.configService.get<number>('RIOT_SYNC_STALE_MS', 900_000);
+  }
+
+  private logSyncDebug(event: string, details: Record<string, unknown>): void {
+    this.logger.debug(
+      `[RiotSyncDebug] ${JSON.stringify({
+        event,
+        ...this.sanitizeLogDetails(details),
+      })}`,
+    );
+  }
+
+  private logMatchHistoryCoverage(input: {
+    userId: string;
+    stored: number;
+    nextStart: number;
+    complete: boolean;
+  }): void {
+    this.logger.debug(
+      `[RiotSyncDebug] userId=${input.userId} action=match_history_coverage stored=${input.stored} nextStart=${input.nextStart} complete=${input.complete}`,
+    );
+  }
+
+  private logSyncStateTransition(
+    riotAccountId: string,
+    from: RiotSyncStatus,
+    to: RiotSyncStatus,
+    details?: Record<string, unknown>,
+  ): void {
+    this.logSyncDebug('state_transition', {
+      riotAccountId,
+      phase: 'state_transition',
+      from,
+      to,
+      ...(details ?? {}),
+    });
   }
 
   private logSyncStage(stage: string, details: Record<string, unknown>): void {
@@ -1334,7 +2169,14 @@ export class RiotService {
     summonerLevel: number | null;
     summonerRevisionDate: Date | null;
     lastSyncedAt: Date | null;
+    syncPhase: string | null;
+    lastSyncProgressAt: Date | null;
+    processedMatchCount: number;
+    queuedMatchCount: number;
+    hasUsableSnapshot: boolean;
   }): RiotAccountSyncStatusResponseDto {
+    const estimatedRemaining = Math.max(account.queuedMatchCount - account.processedMatchCount, 0);
+
     return {
       riotAccountId: account.id,
       syncStatus: account.syncStatus,
@@ -1349,6 +2191,13 @@ export class RiotService {
       summonerLevel: account.summonerLevel,
       summonerRevisionDate: account.summonerRevisionDate?.toISOString() ?? null,
       lastSyncedAt: account.lastSyncedAt?.toISOString() ?? null,
+      processedMatchCount: account.queuedMatchCount > 0 ? account.processedMatchCount : null,
+      queuedMatchCount: account.queuedMatchCount > 0 ? account.queuedMatchCount : null,
+      estimatedRemaining: account.queuedMatchCount > 0 ? estimatedRemaining : null,
+      lastProgressAt: account.lastSyncProgressAt?.toISOString() ?? null,
+      phase: account.syncPhase,
+      isInitialSync: account.lastSyncSucceededAt === null,
+      hasUsableSnapshot: account.hasUsableSnapshot || Boolean(account.lastSyncedAt),
     };
   }
 

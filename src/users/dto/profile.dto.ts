@@ -17,6 +17,11 @@ import {
 } from 'class-validator';
 import { Transform } from 'class-transformer';
 
+import {
+  TopChampionAggregationStatusDto,
+  TopChampionSummaryDto,
+} from '../../riot/dto/top-champion.dto';
+
 export class UpdateMyProfileDto {
   @ApiPropertyOptional({ enum: Position })
   @IsOptional()
@@ -115,6 +120,12 @@ export class UserProfileResponseDto {
 
   @ApiProperty()
   noshowCount!: number;
+
+  @ApiProperty({ type: [TopChampionSummaryDto] })
+  topChampions!: TopChampionSummaryDto[];
+
+  @ApiProperty({ type: TopChampionAggregationStatusDto })
+  topChampionAggregationStatus!: TopChampionAggregationStatusDto;
 }
 
 export class InviteUserSearchQueryDto {

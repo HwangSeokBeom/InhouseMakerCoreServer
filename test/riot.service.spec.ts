@@ -32,6 +32,13 @@ type RiotAccountRow = {
   lastSyncWarningMessage: string | null;
   lastSyncedAt: Date | null;
   lastSyncError: string | null;
+  syncPhase: string | null;
+  lastSyncProgressAt: Date | null;
+  processedMatchCount: number;
+  queuedMatchCount: number;
+  hasUsableSnapshot: boolean;
+  matchHistoryNextStart: number;
+  matchHistoryComplete: boolean;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -39,6 +46,21 @@ type RiotAccountRow = {
 type SnapshotRow = {
   id: string;
   riotAccountId: string;
+};
+
+type ParticipantSummaryRow = {
+  riotMatchId: string;
+  puuid: string;
+  queueCategory: string;
+  championId: number | null;
+  championKey: string | null;
+  championName: string | null;
+  kills: number;
+  deaths: number;
+  assists: number;
+  didWin: boolean | null;
+  playedAt: Date;
+  seasonKey: string;
 };
 
 class InMemoryRiotPrisma {
@@ -109,6 +131,13 @@ class InMemoryRiotPrisma {
         lastSyncWarningMessage: null,
         lastSyncedAt: null,
         lastSyncError: null,
+        syncPhase: null,
+        lastSyncProgressAt: null,
+        processedMatchCount: 0,
+        queuedMatchCount: 0,
+        hasUsableSnapshot: false,
+        matchHistoryNextStart: args.data.matchHistoryNextStart ?? 0,
+        matchHistoryComplete: args.data.matchHistoryComplete ?? false,
         createdAt: now,
         updatedAt: now,
       };
@@ -188,6 +217,13 @@ class InMemoryRiotPrisma {
       lastSyncWarningMessage: overrides.lastSyncWarningMessage ?? null,
       lastSyncedAt: overrides.lastSyncedAt ?? null,
       lastSyncError: overrides.lastSyncError ?? null,
+      syncPhase: overrides.syncPhase ?? null,
+      lastSyncProgressAt: overrides.lastSyncProgressAt ?? null,
+      processedMatchCount: overrides.processedMatchCount ?? 0,
+      queuedMatchCount: overrides.queuedMatchCount ?? 0,
+      hasUsableSnapshot: overrides.hasUsableSnapshot ?? false,
+      matchHistoryNextStart: overrides.matchHistoryNextStart ?? 0,
+      matchHistoryComplete: overrides.matchHistoryComplete ?? false,
       createdAt: overrides.createdAt ?? now,
       updatedAt: overrides.updatedAt ?? now,
     };
@@ -283,6 +319,7 @@ describe('RiotService', () => {
 
   const createService = () => {
     const prismaService = new InMemoryRiotPrisma();
+    const participantSummaries: ParticipantSummaryRow[] = [];
     const riotApiClient = {
       getSummonerByPuuid: jest.fn(),
       getRankedEntriesByPuuid: jest.fn(),
@@ -306,19 +343,66 @@ describe('RiotService', () => {
         }
         throw new Error(`Unexpected config key ${key}`);
       }),
+      get: jest.fn((key: string, defaultValue?: unknown) => {
+        if (key === 'RIOT_MATCH_HISTORY_PAGE_SIZE') {
+          return 20;
+        }
+        if (key === 'RIOT_INITIAL_SYNC_MATCH_COUNT') {
+          return 25;
+        }
+        if (key === 'RIOT_MATCH_HISTORY_EXTRA_PAGES_PER_SYNC') {
+          return 0;
+        }
+        if (key === 'RIOT_MATCH_DETAIL_BATCH_SIZE') {
+          return 5;
+        }
+        if (key === 'RIOT_SYNC_STALE_MS') {
+          return 60_000;
+        }
+        return defaultValue;
+      }),
+    };
+    const riotMatchHistoryRepository = {
+      findKnownMatchIds: jest.fn(async (puuid: string, matchIds: string[]) => {
+        return new Set(
+          participantSummaries
+            .filter((row) => row.puuid === puuid && matchIds.includes(row.riotMatchId))
+            .map((row) => row.riotMatchId),
+        );
+      }),
+      createParticipantSummaries: jest.fn(async (rows: ParticipantSummaryRow[]) => {
+        for (const row of rows) {
+          const exists = participantSummaries.some(
+            (candidate) =>
+              candidate.riotMatchId === row.riotMatchId && candidate.puuid === row.puuid,
+          );
+          if (!exists) {
+            participantSummaries.push({ ...row });
+          }
+        }
+      }),
+      findChampionHistoryByPuuid: jest.fn(async (puuid: string) => {
+        return participantSummaries
+          .filter((row) => row.puuid === puuid && row.queueCategory !== 'IGNORED')
+          .map((row) => ({ ...row }))
+          .sort((left, right) => right.playedAt.getTime() - left.playedAt.getTime());
+      }),
     };
 
     return {
       prismaService,
+      participantSummaries,
       riotApiClient,
       queueService,
       auditLogService,
+      riotMatchHistoryRepository,
       service: new RiotService(
         prismaService as any,
         riotApiClient as any,
         queueService as any,
         auditLogService as any,
         configService as any,
+        riotMatchHistoryRepository as any,
       ),
     };
   };
@@ -565,7 +649,8 @@ describe('RiotService', () => {
     expect(riotApiClient.getRankedEntriesByPuuid).toHaveBeenCalledWith('puuid-na', 'na1');
     expect(riotApiClient.getRecentMatchIds).toHaveBeenCalledWith(
       'puuid-na',
-      20,
+      25,
+      0,
       'americas',
     );
     expect(riotApiClient.getMatchDetail).toHaveBeenCalledWith('match-1', 'americas');
@@ -746,6 +831,320 @@ describe('RiotService', () => {
     expect(updated?.lastSyncWarningCode).toBe('RIOT_RANK_SYNC_UNAVAILABLE');
     expect(updated?.lastSyncErrorCode).toBeNull();
     expect(queueService.enqueuePowerRecalculation).toHaveBeenCalledWith('u1', 'riot-sync');
+  });
+
+  it('keeps initial sync lightweight and finalizes after the first recent match window', async () => {
+    const { service, prismaService, riotApiClient } = createService();
+    prismaService.seedAccount({
+      id: 'ra_initial',
+      userId: 'u1',
+      riotGameName: 'Initial',
+      tagLine: 'NA1',
+      region: 'na1',
+      puuid: 'puuid-initial',
+      isPrimary: true,
+      syncStatus: RiotSyncStatus.QUEUED,
+    });
+    riotApiClient.getSummonerByPuuid.mockResolvedValue({
+      puuid: 'puuid-initial',
+      encryptedSummonerId: 'summoner-initial',
+      encryptedSummonerIdSourceField: 'id',
+      profileIconId: 18,
+      summonerLevel: 44,
+      revisionDate: new Date('2026-04-20T10:00:00.000Z'),
+      rawResponse: {
+        id: 'summoner-initial',
+        puuid: 'puuid-initial',
+      },
+    });
+    riotApiClient.getRankedEntriesByPuuid.mockResolvedValue([]);
+    riotApiClient.getRecentMatchIds.mockResolvedValue(
+      Array.from({ length: 25 }, (_, index) => `match-${index + 1}`),
+    );
+    riotApiClient.getMatchDetail.mockImplementation(async (matchId: string) => ({
+      info: {
+        queueId: 420,
+        gameMode: 'CLASSIC',
+        gameType: 'MATCHED_GAME',
+        mapId: 11,
+        gameEndTimestamp: Date.parse('2026-04-20T10:30:00.000Z'),
+        participants: [
+          {
+            puuid: 'puuid-initial',
+            championId: 1,
+            championName: 'Annie',
+            summonerId: 'summoner-initial',
+            win: matchId !== 'match-2',
+            kills: 7,
+            deaths: 3,
+            assists: 5,
+            visionScore: 20,
+            individualPosition: 'MID',
+            challenges: {
+              killParticipation: 0.6,
+              goldPerMinute: 410,
+            },
+          },
+        ],
+      },
+    }));
+
+    await service.syncAccount('ra_initial', 'initial');
+
+    expect(riotApiClient.getRecentMatchIds).toHaveBeenCalledTimes(1);
+    expect(riotApiClient.getRecentMatchIds).toHaveBeenCalledWith(
+      'puuid-initial',
+      25,
+      0,
+      'americas',
+    );
+    const updated = prismaService.state.accounts.find((account) => account.id === 'ra_initial');
+    expect(updated?.syncStatus).toBe(RiotSyncStatus.SUCCEEDED);
+    expect(updated?.matchHistoryNextStart).toBe(25);
+    expect(updated?.queuedMatchCount).toBe(25);
+    expect(updated?.processedMatchCount).toBe(25);
+    expect(updated?.hasUsableSnapshot).toBe(true);
+  });
+
+  it('finalizes as partial when some match details fail but a usable initial snapshot exists', async () => {
+    const { service, prismaService, riotApiClient } = createService();
+    prismaService.seedAccount({
+      id: 'ra_partial_match',
+      userId: 'u1',
+      riotGameName: 'Partial',
+      tagLine: 'KR1',
+      region: 'kr',
+      puuid: 'puuid-partial',
+      isPrimary: true,
+      syncStatus: RiotSyncStatus.QUEUED,
+    });
+    riotApiClient.getSummonerByPuuid.mockResolvedValue({
+      puuid: 'puuid-partial',
+      encryptedSummonerId: 'summoner-partial',
+      encryptedSummonerIdSourceField: 'id',
+      profileIconId: 31,
+      summonerLevel: 88,
+      revisionDate: new Date('2026-04-20T11:00:00.000Z'),
+      rawResponse: {
+        id: 'summoner-partial',
+        puuid: 'puuid-partial',
+      },
+    });
+    riotApiClient.getRankedEntriesByPuuid.mockResolvedValue([]);
+    riotApiClient.getRecentMatchIds.mockResolvedValue([
+      'match-1',
+      'match-2',
+      'match-3',
+      'match-4',
+      'match-5',
+      'match-6',
+    ]);
+    riotApiClient.getMatchDetail.mockImplementation(async (matchId: string) => {
+      if (matchId === 'match-6') {
+        throw new Error('timeout');
+      }
+
+      return {
+        info: {
+          queueId: 420,
+          gameMode: 'CLASSIC',
+          gameType: 'MATCHED_GAME',
+          mapId: 11,
+          gameEndTimestamp: Date.parse('2026-04-20T11:30:00.000Z'),
+          participants: [
+            {
+              puuid: 'puuid-partial',
+              championId: 99,
+              championName: 'Lux',
+              summonerId: 'summoner-partial',
+              win: true,
+              kills: 8,
+              deaths: 2,
+              assists: 10,
+              visionScore: 21,
+              teamPosition: 'UTILITY',
+              challenges: {
+                killParticipation: 0.71,
+                goldPerMinute: 330,
+              },
+            },
+          ],
+        },
+      };
+    });
+
+    await service.syncAccount('ra_partial_match', 'initial');
+
+    const updated = prismaService.state.accounts.find((account) => account.id === 'ra_partial_match');
+    expect(updated?.syncStatus).toBe(RiotSyncStatus.PARTIAL);
+    expect(updated?.lastSyncWarningCode).toBe('RIOT_MATCH_DETAIL_PARTIAL');
+    expect(updated?.processedMatchCount).toBe(6);
+    expect(updated?.queuedMatchCount).toBe(6);
+    expect(updated?.hasUsableSnapshot).toBe(true);
+  });
+
+  it('fails the sync when recent match detail coverage is too low to build a usable snapshot', async () => {
+    const { service, prismaService, riotApiClient } = createService();
+    prismaService.seedAccount({
+      id: 'ra_failed_match',
+      userId: 'u1',
+      riotGameName: 'Failed',
+      tagLine: 'KR1',
+      region: 'kr',
+      puuid: 'puuid-failed',
+      isPrimary: true,
+      syncStatus: RiotSyncStatus.QUEUED,
+    });
+    riotApiClient.getSummonerByPuuid.mockResolvedValue({
+      puuid: 'puuid-failed',
+      encryptedSummonerId: 'summoner-failed',
+      encryptedSummonerIdSourceField: 'id',
+      profileIconId: 41,
+      summonerLevel: 102,
+      revisionDate: new Date('2026-04-20T12:00:00.000Z'),
+      rawResponse: {
+        id: 'summoner-failed',
+        puuid: 'puuid-failed',
+      },
+    });
+    riotApiClient.getRankedEntriesByPuuid.mockResolvedValue([]);
+    riotApiClient.getRecentMatchIds.mockResolvedValue([
+      'match-1',
+      'match-2',
+      'match-3',
+      'match-4',
+      'match-5',
+      'match-6',
+    ]);
+    riotApiClient.getMatchDetail.mockImplementation(async (matchId: string) => {
+      if (['match-5', 'match-6'].includes(matchId)) {
+        throw new Error('timeout');
+      }
+
+      return {
+        info: {
+          queueId: 420,
+          gameMode: 'CLASSIC',
+          gameType: 'MATCHED_GAME',
+          mapId: 11,
+          gameEndTimestamp: Date.parse('2026-04-20T12:30:00.000Z'),
+          participants: [
+            {
+              puuid: 'puuid-failed',
+              championId: 222,
+              championName: 'Jinx',
+              summonerId: 'summoner-failed',
+              win: true,
+              kills: 10,
+              deaths: 4,
+              assists: 6,
+              visionScore: 17,
+              teamPosition: 'BOTTOM',
+              challenges: {
+                killParticipation: 0.64,
+                goldPerMinute: 405,
+              },
+            },
+          ],
+        },
+      };
+    });
+
+    await service.syncAccount('ra_failed_match', 'initial');
+
+    const updated = prismaService.state.accounts.find((account) => account.id === 'ra_failed_match');
+    expect(updated?.syncStatus).toBe(RiotSyncStatus.FAILED);
+    expect(updated?.lastSyncErrorCode).toBe('RIOT_MATCH_DETAIL_INCOMPLETE');
+    expect(updated?.hasUsableSnapshot).toBe(false);
+  });
+
+  it('recovers stale running syncs during sync-status reads', async () => {
+    const { service, prismaService } = createService();
+    prismaService.seedAccount({
+      id: 'ra_stale',
+      userId: 'u1',
+      riotGameName: 'Stale',
+      tagLine: 'KR1',
+      region: 'kr',
+      puuid: 'puuid-stale',
+      syncStatus: RiotSyncStatus.RUNNING,
+      lastSyncRequestedAt: new Date(0),
+      lastSyncProgressAt: new Date(0),
+      updatedAt: new Date(0),
+    });
+
+    const status = await service.getSyncStatus('u1', 'ra_stale');
+
+    expect(status.syncStatus).toBe(RiotSyncStatus.FAILED);
+    expect(status.lastSyncErrorCode).toBe('RIOT_SYNC_STALLED');
+    expect(status.phase).toBe('failed');
+    const updated = prismaService.state.accounts.find((account) => account.id === 'ra_stale');
+    expect(updated?.syncStatus).toBe(RiotSyncStatus.FAILED);
+  });
+
+  it('does not duplicate champion history rows when the same sync runs twice', async () => {
+    const { service, prismaService, riotApiClient, participantSummaries } = createService();
+    prismaService.seedAccount({
+      id: 'ra1',
+      userId: 'u1',
+      riotGameName: 'Dupes',
+      tagLine: 'KR1',
+      region: 'kr',
+      puuid: 'puuid-dup',
+      isPrimary: true,
+      syncStatus: RiotSyncStatus.QUEUED,
+    });
+    riotApiClient.getSummonerByPuuid.mockResolvedValue({
+      puuid: 'puuid-dup',
+      encryptedSummonerId: 'summoner-dup',
+      encryptedSummonerIdSourceField: 'id',
+      profileIconId: 99,
+      summonerLevel: 88,
+      revisionDate: new Date('2026-04-18T00:00:00.000Z'),
+      rawResponse: {
+        id: 'summoner-dup',
+        puuid: 'puuid-dup',
+      },
+    });
+    riotApiClient.getRankedEntriesByPuuid.mockResolvedValue([]);
+    riotApiClient.getRecentMatchIds.mockResolvedValue(['match-dup-1']);
+    riotApiClient.getMatchDetail.mockResolvedValue({
+      info: {
+        queueId: 420,
+        gameMode: 'CLASSIC',
+        gameType: 'MATCHED_GAME',
+        mapId: 11,
+        gameEndTimestamp: Date.parse('2026-04-18T01:00:00.000Z'),
+        participants: [
+          {
+            puuid: 'puuid-dup',
+            championId: 266,
+            championName: 'Aatrox',
+            win: true,
+            kills: 9,
+            deaths: 2,
+            assists: 5,
+            visionScore: 18,
+            individualPosition: 'TOP',
+            challenges: {
+              killParticipation: 0.62,
+              goldPerMinute: 410,
+            },
+          },
+        ],
+      },
+    });
+
+    await service.syncAccount('ra1');
+    await service.syncAccount('ra1');
+
+    expect(participantSummaries).toHaveLength(1);
+    expect(participantSummaries[0]).toMatchObject({
+      riotMatchId: 'match-dup-1',
+      puuid: 'puuid-dup',
+      championKey: 'Aatrox',
+      queueCategory: 'RANKED_SOLO',
+    });
   });
 
   it('marks sync as failed on a non-retryable Riot 400 error', async () => {

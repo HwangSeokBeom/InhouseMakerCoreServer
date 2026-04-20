@@ -15,14 +15,38 @@ describe('PowerService', () => {
   const usersService = {
     assertCanAccessUserScopedResource: jest.fn(),
   } as any;
+  const riotChampionSummaryService = {
+    getTopChampionsForUser: jest.fn(),
+    getTopChampionSummaryForUser: jest.fn(),
+  } as any;
+  const emptyChampionSummary = {
+    topChampions: [],
+    aggregationStatus: {
+      status: 'EMPTY',
+      reason: 'no_sync',
+      message: 'test',
+      hasUsableContent: false,
+      totalMatches: 0,
+      rankedMatches: 0,
+      eligibleMatches: 0,
+      mappedMatches: 0,
+      thresholdUsed: null,
+      syncCoverageSummary: {},
+    },
+  };
 
   let service: PowerService;
 
   beforeEach(() => {
     jest.clearAllMocks();
+    riotChampionSummaryService.getTopChampionsForUser.mockResolvedValue([]);
+    riotChampionSummaryService.getTopChampionSummaryForUser.mockResolvedValue(
+      emptyChampionSummary,
+    );
     service = new PowerService(
       prismaService,
       usersService,
+      riotChampionSummaryService,
       {} as any,
       {} as any,
       {} as any,
@@ -84,6 +108,7 @@ describe('PowerService', () => {
     expect((response.explanation.displayScore as Record<string, unknown>).sourceField).toBe(
       'overallPower',
     );
+    expect(response.topChampions).toEqual([]);
   });
 
   it('recalculates when riot sync is newer than stored calculation time', async () => {
@@ -134,6 +159,7 @@ describe('PowerService', () => {
 
     expect(recalculateSpy).toHaveBeenCalledWith('user-2');
     expect(response.overallPower).toBe(68.4);
+    expect(response.topChampions).toEqual([]);
   });
 
   it('normalizes legacy seeded profiles into the full power-profile contract', async () => {
@@ -179,6 +205,116 @@ describe('PowerService', () => {
     }
     expect(response.primaryPosition).toBe(Position.ADC);
     expect(response.secondaryPosition).toBe(Position.MID);
+    expect(response.topChampions).toEqual([]);
+  });
+
+  it('returns auto-calculated primary and secondary positions when manual positions are empty', async () => {
+    usersService.assertCanAccessUserScopedResource.mockResolvedValue(undefined);
+    prismaService.playerPowerProfile.findUnique.mockResolvedValue({
+      userId: 'user-auto',
+      overallPower: 70,
+      lanePowerJson: {
+        [Position.TOP]: 65,
+        [Position.JUNGLE]: 68,
+        [Position.MID]: 78,
+        [Position.ADC]: 73,
+        [Position.SUPPORT]: 62,
+      },
+      breakdownJson: {
+        displayScore: {
+          sourceField: 'overallPower',
+        },
+      },
+      styleScoresJson: { stability: 50, carry: 50, teamContribution: 50, laneInfluence: 50 },
+      basePower: 69,
+      formScore: 71,
+      inhouseMmr: 1700,
+      inhouseConfidence: 0.2,
+      user: { primaryPosition: null, secondaryPosition: null },
+      sourceAccount: { lastSyncedAt: null },
+      version: POWER_PROFILE_VERSION,
+      calculatedAt: new Date('2026-04-20T09:00:00Z'),
+    });
+
+    const response = await service.getProfile('viewer-1', 'user-auto');
+
+    expect(response.primaryPosition).toBe(Position.MID);
+    expect(response.secondaryPosition).toBe(Position.ADC);
+    expect(response.explanation.laneAutoAssignmentBasis).toMatchObject({
+      source: 'auto_fallback',
+      primaryPosition: Position.MID,
+      secondaryPosition: Position.ADC,
+    });
+  });
+
+  it('keeps non-empty top champions in the power-profile response even when aggregation status is partial', async () => {
+    usersService.assertCanAccessUserScopedResource.mockResolvedValue(undefined);
+    prismaService.playerPowerProfile.findUnique.mockResolvedValue({
+      userId: 'user-champions',
+      overallPower: 70,
+      lanePowerJson: {
+        [Position.TOP]: 64,
+        [Position.JUNGLE]: 66,
+        [Position.MID]: 74,
+        [Position.ADC]: 71,
+        [Position.SUPPORT]: 63,
+      },
+      breakdownJson: {
+        displayScore: {
+          sourceField: 'overallPower',
+        },
+      },
+      styleScoresJson: { stability: 50, carry: 50, teamContribution: 50, laneInfluence: 50 },
+      basePower: 67,
+      formScore: 52,
+      inhouseMmr: 1700,
+      inhouseConfidence: 0.1,
+      user: { primaryPosition: Position.MID, secondaryPosition: Position.ADC },
+      sourceAccount: { id: 'riot-1', lastSyncedAt: null },
+      version: POWER_PROFILE_VERSION,
+      calculatedAt: new Date('2026-04-20T09:00:00Z'),
+    });
+    riotChampionSummaryService.getTopChampionSummaryForUser.mockResolvedValue({
+      topChampions: [
+        {
+          championId: 99,
+          championKey: 'Lux',
+          championName: 'Lux',
+          games: 2,
+          wins: 1,
+          losses: 1,
+          winRate: 0.5,
+          kills: 12,
+          deaths: 8,
+          assists: 21,
+          kda: 4.13,
+          lastPlayedAt: '2026-04-20T00:00:00.000Z',
+        },
+      ],
+      aggregationStatus: {
+        status: 'PARTIAL',
+        reason: 'insufficient_sample',
+        message: 'Top champions were aggregated from stored ranked history, but the champion sample is still limited.',
+        hasUsableContent: true,
+        totalMatches: 2,
+        rankedMatches: 2,
+        eligibleMatches: 2,
+        mappedMatches: 2,
+        thresholdUsed: 2,
+        syncCoverageSummary: {
+          usedQueueScope: 'ranked',
+        },
+      },
+    });
+
+    const response = await service.getProfile('viewer-1', 'user-champions');
+
+    expect(response.topChampions).toHaveLength(1);
+    expect(response.topChampionAggregationStatus).toMatchObject({
+      status: 'PARTIAL',
+      reason: 'insufficient_sample',
+      hasUsableContent: true,
+    });
   });
 
   it('returns lobby-ready seeded responses for all 10 dev fixtures', async () => {

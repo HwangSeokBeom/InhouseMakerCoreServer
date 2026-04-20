@@ -151,6 +151,7 @@ export class RiotApiClient {
   getRecentMatchIds(
     puuid: string,
     count = 20,
+    start = 0,
     accountRegion = this.accountRegion,
   ): Promise<string[]> {
     return this.request<string[]>(
@@ -161,14 +162,14 @@ export class RiotApiClient {
           `/lol/match/v5/matches/by-puuid/${encodeURIComponent(puuid)}/ids`,
         ),
         params: {
-          start: 0,
+          start,
           count,
         },
       },
       {
         stage: 'match_ids_lookup',
         accountRegion,
-        requestParams: { puuid, start: 0, count },
+        requestParams: { puuid, start, count },
       },
     );
   }

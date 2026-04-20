@@ -21,6 +21,27 @@ export interface PowerProfileStyleShape {
   seeded?: boolean;
 }
 
+export interface LaneAutoAssignmentShape {
+  primaryPosition: PowerRole;
+  secondaryPosition: PowerRole | null;
+  source:
+    | 'manual'
+    | 'manual_primary_auto_secondary'
+    | 'auto_fallback'
+    | 'auto_fallback_flat_secondary';
+  reason: string;
+  laneScores: Record<PowerRole, number>;
+  rankedRoles: Array<{
+    role: PowerRole;
+    score: number;
+  }>;
+  scoreGap: {
+    primaryToSecondary: number | null;
+    secondaryToThird: number | null;
+    totalSpread: number;
+  };
+}
+
 export function buildDefaultLanePower(overallPower: number): Record<PowerRole, number> {
   return {
     [Position.TOP]: overallPower,
@@ -155,7 +176,75 @@ export function buildPowerProfileDisplayScore(input: {
   };
 }
 
-function rankRolesByPower(lanePower: Record<PowerRole, number>): PowerRole[] {
+export function resolveLaneAutoAssignment(
+  lanePower: Record<PowerRole, number>,
+  manualPrimaryPosition?: Position | null,
+  manualSecondaryPosition?: Position | null,
+): LaneAutoAssignmentShape {
+  const rankedRoles = rankRolesByPower(lanePower);
+  const rankedRoleScores = rankedRoles.map((role) => ({
+    role,
+    score: normalizePercent(lanePower[role], 50),
+  }));
+  const manualPrimary = isPowerRole(manualPrimaryPosition) ? manualPrimaryPosition : null;
+  const manualSecondary =
+    isPowerRole(manualSecondaryPosition) && manualSecondaryPosition !== manualPrimary
+      ? manualSecondaryPosition
+      : null;
+  const primaryPosition = manualPrimary ?? rankedRoles[0] ?? ROLE_FOCUS_FALLBACK;
+  const secondaryCandidate = manualSecondary ?? resolveAutoSecondaryRole(primaryPosition, rankedRoles);
+  const secondaryPosition = manualSecondary
+    ? secondaryCandidate
+    : shouldExposeAutoSecondary(primaryPosition, secondaryCandidate, rankedRoles, lanePower)
+      ? secondaryCandidate
+      : null;
+  const secondRole = rankedRoles.find((role) => role !== primaryPosition) ?? null;
+  const thirdRole = rankedRoles.find((role) => role !== primaryPosition && role !== secondRole) ?? null;
+  const values = POWER_ROLES.map((role) => normalizePercent(lanePower[role], 50));
+  const totalSpread = Math.max(...values) - Math.min(...values);
+  const primaryToSecondary =
+    secondRole !== null
+      ? Number((lanePower[primaryPosition] - lanePower[secondRole]).toFixed(2))
+      : null;
+  const secondaryToThird =
+    secondaryPosition !== null && thirdRole !== null
+      ? Number((lanePower[secondaryPosition] - lanePower[thirdRole]).toFixed(2))
+      : null;
+  const source =
+    manualPrimary && manualSecondary
+      ? 'manual'
+      : manualPrimary
+        ? 'manual_primary_auto_secondary'
+        : secondaryPosition
+          ? 'auto_fallback'
+          : 'auto_fallback_flat_secondary';
+
+  return {
+    primaryPosition,
+    secondaryPosition,
+    source,
+    reason:
+      source === 'manual'
+        ? 'Manual primary and secondary positions are valid and preserved.'
+        : source === 'manual_primary_auto_secondary'
+          ? `Manual primary position is preserved; secondary position is selected from lane power (spread ${Number(totalSpread.toFixed(2))}).`
+          : secondaryPosition
+            ? `Primary and secondary positions are selected from the two highest lane power scores (spread ${Number(totalSpread.toFixed(2))}, primary-secondary ${primaryToSecondary ?? 'n/a'}, secondary-third ${secondaryToThird ?? 'n/a'}).`
+            : `Primary position is selected from lane power; secondary is withheld because lane scores are too flat (spread ${Number(totalSpread.toFixed(2))}).`,
+    laneScores: POWER_ROLES.reduce<Record<PowerRole, number>>((acc, role) => {
+      acc[role] = normalizePercent(lanePower[role], 50);
+      return acc;
+    }, {} as Record<PowerRole, number>),
+    rankedRoles: rankedRoleScores,
+    scoreGap: {
+      primaryToSecondary,
+      secondaryToThird,
+      totalSpread: Number(totalSpread.toFixed(2)),
+    },
+  };
+}
+
+export function rankRolesByPower(lanePower: Record<PowerRole, number>): PowerRole[] {
   return [...POWER_ROLES].sort((left, right) => {
     const diff = lanePower[right] - lanePower[left];
     if (diff !== 0) {
@@ -164,6 +253,40 @@ function rankRolesByPower(lanePower: Record<PowerRole, number>): PowerRole[] {
 
     return ROLE_PRIORITY.indexOf(left) - ROLE_PRIORITY.indexOf(right);
   });
+}
+
+function resolveAutoSecondaryRole(
+  primaryRole: PowerRole,
+  rankedRoles: PowerRole[],
+): PowerRole | null {
+  return rankedRoles.find((role) => role !== primaryRole) ?? null;
+}
+
+function shouldExposeAutoSecondary(
+  primaryRole: PowerRole,
+  secondaryRole: PowerRole | null,
+  rankedRoles: PowerRole[],
+  lanePower: Record<PowerRole, number>,
+): boolean {
+  if (!secondaryRole) {
+    return false;
+  }
+
+  const roleScores = rankedRoles.map((role) => normalizePercent(lanePower[role], 50));
+  const totalSpread = Math.max(...roleScores) - Math.min(...roleScores);
+  if (totalSpread < 1.4) {
+    return false;
+  }
+
+  const thirdRole =
+    rankedRoles.find((role) => role !== primaryRole && role !== secondaryRole) ?? null;
+  if (!thirdRole) {
+    return true;
+  }
+
+  const primaryToSecondary = Math.abs(lanePower[primaryRole] - lanePower[secondaryRole]);
+  const secondaryToThird = lanePower[secondaryRole] - lanePower[thirdRole];
+  return !(primaryToSecondary < 0.9 && secondaryToThird < 0.9);
 }
 
 function roleFocusBias(

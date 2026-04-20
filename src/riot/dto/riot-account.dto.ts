@@ -164,6 +164,27 @@ export class RiotAccountSyncStatusResponseDto {
 
   @ApiPropertyOptional()
   lastSyncedAt!: string | null;
+
+  @ApiPropertyOptional()
+  processedMatchCount!: number | null;
+
+  @ApiPropertyOptional()
+  queuedMatchCount!: number | null;
+
+  @ApiPropertyOptional()
+  estimatedRemaining!: number | null;
+
+  @ApiPropertyOptional()
+  lastProgressAt!: string | null;
+
+  @ApiPropertyOptional()
+  phase!: string | null;
+
+  @ApiPropertyOptional()
+  isInitialSync!: boolean;
+
+  @ApiPropertyOptional()
+  hasUsableSnapshot!: boolean;
 }
 
 export class RiotAccountDeleteResponseDto {

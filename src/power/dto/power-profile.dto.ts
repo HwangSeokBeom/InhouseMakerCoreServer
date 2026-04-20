@@ -1,6 +1,11 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Position } from '@prisma/client';
 
+import {
+  TopChampionAggregationStatusDto,
+  TopChampionSummaryDto,
+} from '../../riot/dto/top-champion.dto';
+
 export class PowerProfileStyleDto {
   @ApiProperty()
   stability!: number;
@@ -63,4 +68,10 @@ export class PowerProfileResponseDto {
 
   @ApiProperty()
   calculatedAt!: string;
+
+  @ApiProperty({ type: [TopChampionSummaryDto] })
+  topChampions!: TopChampionSummaryDto[];
+
+  @ApiProperty({ type: TopChampionAggregationStatusDto })
+  topChampionAggregationStatus!: TopChampionAggregationStatusDto;
 }

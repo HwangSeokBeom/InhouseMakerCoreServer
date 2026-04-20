@@ -1,8 +1,9 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Position, ResultStatus, SnapshotType } from '@prisma/client';
 
 import { toPrismaJson } from '../common/prisma-json.util';
 import { PrismaService } from '../prisma/prisma.service';
+import { RiotChampionSummaryService } from '../riot/riot-champion-summary.service';
 import { UsersService } from '../users/users.service';
 import { BasePowerCalculator } from './calculators/base-power.calculator';
 import { FormScoreCalculator } from './calculators/form-score.calculator';
@@ -17,15 +18,19 @@ import {
   buildPowerProfileDisplayScore,
   normalizeLanePower,
   normalizeStyleScores,
+  resolveLaneAutoAssignment,
 } from './power-profile.contract';
 import { PowerProfileResponseDto } from './dto/power-profile.dto';
 import { POWER_PROFILE_VERSION, POWER_ROLES, PowerRole } from './power.constants';
 
 @Injectable()
 export class PowerService {
+  private readonly logger = new Logger(PowerService.name);
+
   constructor(
     private readonly prismaService: PrismaService,
     private readonly usersService: UsersService,
+    private readonly riotChampionSummaryService: RiotChampionSummaryService,
     private readonly basePowerCalculator: BasePowerCalculator,
     private readonly formScoreCalculator: FormScoreCalculator,
     private readonly inhouseMmrCalculator: InhouseMmrCalculator,
@@ -106,6 +111,27 @@ export class PowerService {
         lastSyncAt: sourceAccount?.lastSyncedAt ?? null,
       },
     );
+    if (basePowerBreakdown.historicalFallbackApplied) {
+      this.logPowerDebug(userId, 'current_season_missing', {
+        apply_historical_fallback: true,
+      });
+    }
+    for (const candidate of basePowerBreakdown.historicalCandidates) {
+      this.logPowerDebug(userId, 'historical_weight', {
+        season: candidate.seasonKey,
+        queue: candidate.queueSource.toLowerCase(),
+        value: candidate.decayedScore,
+        weight: candidate.effectiveWeight,
+        decay: candidate.recencyDecay,
+      });
+    }
+    this.logPowerDebug(userId, 'fallback_penalty', {
+      unrankedPenalty: basePowerBreakdown.unrankedPenalty,
+      inactivePenalty: basePowerBreakdown.inactivePenalty,
+      historicalAdjustment: basePowerBreakdown.historicalAdjustment,
+      flexAdjustment: basePowerBreakdown.flexAdjustment,
+      floorScore: basePowerBreakdown.floorScore,
+    });
     const formScoreBreakdown = this.formScoreCalculator.calculateDetailed(
       aggregateMetrics,
     );
@@ -118,6 +144,11 @@ export class PowerService {
       user.primaryPosition,
       user.secondaryPosition,
     );
+    this.logPowerDebug(userId, 'lane_spread_adjustment', {
+      before: lanePowerBreakdown.lanePowerBeforeSpread,
+      after: lanePowerBreakdown.lanePower,
+      multiplier: lanePowerBreakdown.spreadMultiplier,
+    });
 
     const inhouseStats = await this.prismaService.inhousePlayerStat.findMany({
       where: {
@@ -184,6 +215,18 @@ export class PowerService {
         primaryPosition: user.primaryPosition,
         secondaryPosition: user.secondaryPosition,
       });
+    const laneAutoAssignmentBasis = resolveLaneAutoAssignment(
+      finalRolePower,
+      user.primaryPosition,
+      user.secondaryPosition,
+    );
+    this.logPowerDebug(userId, 'lane_auto_assignment', {
+      primary: laneAutoAssignmentBasis.primaryPosition,
+      secondary: laneAutoAssignmentBasis.secondaryPosition,
+      scores: laneAutoAssignmentBasis.laneScores,
+      source: laneAutoAssignmentBasis.source,
+      reason: laneAutoAssignmentBasis.reason,
+    });
     const calculatedAt = new Date();
     const breakdown = {
       version: POWER_PROFILE_VERSION,
@@ -211,8 +254,12 @@ export class PowerService {
       lanePower: {
         formula: lanePowerBreakdown.formula,
         laneAdjustments: lanePowerBreakdown.laneAdjustments,
+        lanePowerBeforeSpread: lanePowerBreakdown.lanePowerBeforeSpread,
+        spreadAdjustments: lanePowerBreakdown.spreadAdjustments,
+        spreadMultiplier: lanePowerBreakdown.spreadMultiplier,
         roles: lanePowerBreakdown.roles,
       },
+      laneAutoAssignmentBasis,
       inhouse: {
         ...inhouseMmrBreakdown,
         inhouseWeight,
@@ -313,7 +360,7 @@ export class PowerService {
     );
   }
 
-  private toResponse(profile: {
+  private async toResponse(profile: {
     userId: string;
     overallPower: number;
     lanePowerJson: unknown;
@@ -327,13 +374,23 @@ export class PowerService {
       primaryPosition: Position | null;
       secondaryPosition: Position | null;
     };
+    sourceAccount?: {
+      id?: string;
+    } | null;
     version: string;
     calculatedAt: Date;
-  }): PowerProfileResponseDto {
+  }): Promise<PowerProfileResponseDto> {
     const explanation = {
       ...((profile.breakdownJson as Record<string, unknown> | null) ?? {}),
     };
     const lanePower = normalizeLanePower(profile.overallPower, profile.lanePowerJson ?? null);
+    const laneAutoAssignmentBasis = resolveLaneAutoAssignment(
+      lanePower,
+      profile.user?.primaryPosition ?? null,
+      profile.user?.secondaryPosition ?? null,
+    );
+    explanation.laneAutoAssignmentBasis =
+      explanation.laneAutoAssignmentBasis ?? laneAutoAssignmentBasis;
     explanation.displayScore =
       explanation.displayScore ??
       buildPowerProfileDisplayScore({
@@ -347,8 +404,12 @@ export class PowerService {
     const style = normalizeStyleScores(profile.styleScoresJson, {
       overallPower: profile.overallPower,
       lanePower,
-      primaryPosition: profile.user?.primaryPosition ?? null,
+      primaryPosition: laneAutoAssignmentBasis.primaryPosition,
     });
+    const championSummary = await this.riotChampionSummaryService.getTopChampionSummaryForUser(
+      profile.userId,
+      profile.sourceAccount?.id ?? null,
+    );
 
     return {
       userId: profile.userId,
@@ -360,11 +421,13 @@ export class PowerService {
       inhouseMmr: profile.inhouseMmr,
       inhouseConfidence: profile.inhouseConfidence,
       inhouseWeight,
-      primaryPosition: profile.user?.primaryPosition ?? null,
-      secondaryPosition: profile.user?.secondaryPosition ?? null,
+      primaryPosition: laneAutoAssignmentBasis.primaryPosition,
+      secondaryPosition: laneAutoAssignmentBasis.secondaryPosition,
       explanation,
       version: profile.version,
       calculatedAt: profile.calculatedAt.toISOString(),
+      topChampions: championSummary.topChampions,
+      topChampionAggregationStatus: championSummary.aggregationStatus,
     };
   }
 
@@ -380,6 +443,7 @@ export class PowerService {
         },
         sourceAccount: {
           select: {
+            id: true,
             lastSyncedAt: true,
           },
         },
@@ -420,5 +484,26 @@ export class PowerService {
 
   private powerToRating(power: number): number {
     return Number((1000 + power * 10).toFixed(2));
+  }
+
+  private logPowerDebug(
+    userId: string,
+    action: string,
+    details: Record<string, unknown>,
+  ): void {
+    const serialized = Object.entries(details)
+      .map(([key, value]) => `${key}=${this.formatLogValue(value)}`)
+      .join(' ');
+    this.logger.debug(`[PowerDebug] userId=${userId} action=${action} ${serialized}`);
+  }
+
+  private formatLogValue(value: unknown): string {
+    if (value === null || value === undefined) {
+      return 'null';
+    }
+    if (typeof value === 'object') {
+      return JSON.stringify(value);
+    }
+    return String(value);
   }
 }

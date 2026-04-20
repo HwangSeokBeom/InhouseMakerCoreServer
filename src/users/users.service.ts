@@ -3,6 +3,7 @@ import {
   GroupRole,
   MatchStatus,
   ParticipationStatus,
+  Position,
   ResultStatus,
   UserStatus,
 } from '@prisma/client';
@@ -10,6 +11,8 @@ import {
 import { AppErrorCode, AppException } from '../common/app.exception';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-request.interface';
 import { PrismaService } from '../prisma/prisma.service';
+import { normalizeLanePower, resolveLaneAutoAssignment } from '../power/power-profile.contract';
+import { RiotChampionSummaryService } from '../riot/riot-champion-summary.service';
 import {
   InhouseHistoryQueryDto,
   InhouseHistoryResponseDto,
@@ -43,11 +46,22 @@ export class UsersService {
     ParticipationStatus.LOCKED_IN,
   ];
 
-  constructor(private readonly prismaService: PrismaService) {}
+  constructor(
+    private readonly prismaService: PrismaService,
+    private readonly riotChampionSummaryService: RiotChampionSummaryService,
+  ) {}
 
   async getMe(userId: string): Promise<MeResponseDto> {
     const user = await this.prismaService.user.findUnique({
       where: { id: userId },
+      include: {
+        powerProfile: {
+          select: {
+            overallPower: true,
+            lanePowerJson: true,
+          },
+        },
+      },
     });
 
     if (!user) {
@@ -61,13 +75,15 @@ export class UsersService {
       );
     }
 
+    const laneAssignment = this.resolveProfilePositionAssignment(user);
+
     return {
       id: user.id,
       email: user.email,
       nickname: user.nickname,
       status: user.status,
-      primaryPosition: user.primaryPosition,
-      secondaryPosition: user.secondaryPosition,
+      primaryPosition: laneAssignment.primaryPosition,
+      secondaryPosition: laneAssignment.secondaryPosition,
       isFillAvailable: user.isFillAvailable,
       styleTags: this.parseStringArray(user.styleTags),
       mannerScore: user.mannerScore,
@@ -107,6 +123,7 @@ export class UsersService {
         powerProfile: {
           select: {
             overallPower: true,
+            lanePowerJson: true,
           },
         },
       },
@@ -123,19 +140,26 @@ export class UsersService {
       );
     }
 
+    const topChampionSummary = await this.riotChampionSummaryService.getTopChampionSummaryForUser(
+      targetUserId,
+    );
+    const laneAssignment = this.resolveProfilePositionAssignment(user);
+
     return {
       id: user.id,
       userId: user.id,
       nickname: user.nickname,
-      primaryPosition: user.primaryPosition,
-      mainPosition: user.primaryPosition,
-      secondaryPosition: user.secondaryPosition,
+      primaryPosition: laneAssignment.primaryPosition,
+      mainPosition: laneAssignment.primaryPosition,
+      secondaryPosition: laneAssignment.secondaryPosition,
       isFillAvailable: user.isFillAvailable,
       recentPower: user.powerProfile?.overallPower ?? null,
       profileVisible: true,
       styleTags: this.parseStringArray(user.styleTags),
       mannerScore: user.mannerScore,
       noshowCount: user.noshowCount,
+      topChampions: topChampionSummary.topChampions,
+      topChampionAggregationStatus: topChampionSummary.aggregationStatus,
     };
   }
 
@@ -548,6 +572,7 @@ export class UsersService {
         powerProfile: {
           select: {
             overallPower: true,
+            lanePowerJson: true,
           },
         },
         riotAccounts: {
@@ -585,13 +610,14 @@ export class UsersService {
         const membership = 'groupMemberships' in user ? user.groupMemberships?.[0] ?? null : null;
         const riotAccount = user.riotAccounts[0] ?? null;
         const eligibility = this.resolveInviteEligibility(user.id === requesterUserId, membership !== null);
+        const laneAssignment = this.resolveProfilePositionAssignment(user);
         return {
           id: user.id,
           userId: user.id,
           nickname: user.nickname,
-          primaryPosition: user.primaryPosition,
-          mainPosition: user.primaryPosition,
-          secondaryPosition: user.secondaryPosition,
+          primaryPosition: laneAssignment.primaryPosition,
+          mainPosition: laneAssignment.primaryPosition,
+          secondaryPosition: laneAssignment.secondaryPosition,
           recentPower: user.powerProfile?.overallPower ?? null,
           riotDisplayName: this.buildRiotDisplayName(
             riotAccount?.riotGameName ?? null,
@@ -625,6 +651,19 @@ export class UsersService {
 
   private parseStringArray(value: unknown): string[] {
     return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+  }
+
+  private resolveProfilePositionAssignment(user: {
+    primaryPosition: Position | null;
+    secondaryPosition: Position | null;
+    powerProfile?: {
+      overallPower: number;
+      lanePowerJson: unknown;
+    } | null;
+  }) {
+    const overallPower = user.powerProfile?.overallPower ?? 50;
+    const lanePower = normalizeLanePower(overallPower, user.powerProfile?.lanePowerJson ?? null);
+    return resolveLaneAutoAssignment(lanePower, user.primaryPosition, user.secondaryPosition);
   }
 
   private buildRiotDisplayName(

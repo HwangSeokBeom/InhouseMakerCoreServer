@@ -6,6 +6,7 @@ import {
   HttpStatus,
   Logger,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { Response } from 'express';
 
 import { AuthErrorCode } from '../../auth/auth-error-code';
@@ -71,6 +72,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
               : status === HttpStatus.INTERNAL_SERVER_ERROR
                 ? AuthErrorCode.INTERNAL_SERVER_ERROR
                 : undefined;
+    const prismaDebug = this.extractPrismaDebugMetadata(exception);
 
     this.logExceptionDebug(
       status,
@@ -85,6 +87,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
         message,
         reason: details.reason ?? null,
         exceptionName: exception instanceof Error ? exception.name : typeof exception,
+        ...prismaDebug,
       },
       exception,
     );
@@ -165,5 +168,28 @@ export class GlobalExceptionFilter implements ExceptionFilter {
         reason,
       }),
     );
+  }
+
+  private extractPrismaDebugMetadata(exception: unknown): Record<string, unknown> {
+    if (!(exception instanceof Prisma.PrismaClientKnownRequestError)) {
+      return {};
+    }
+
+    const meta =
+      exception.meta && typeof exception.meta === 'object'
+        ? (exception.meta as Record<string, unknown>)
+        : {};
+    const target = Array.isArray(meta.target)
+      ? meta.target.filter((value): value is string => typeof value === 'string')
+      : null;
+
+    return {
+      prismaCode: exception.code,
+      prismaModelName: typeof meta.modelName === 'string' ? meta.modelName : null,
+      prismaColumn: typeof meta.column === 'string' ? meta.column : null,
+      prismaTable: typeof meta.table === 'string' ? meta.table : null,
+      prismaTarget: target,
+      probableCause: exception.code === 'P2022' ? 'database_schema_mismatch' : null,
+    };
   }
 }

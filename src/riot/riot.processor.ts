@@ -18,9 +18,17 @@ export class RiotProcessor extends WorkerHost {
 
     switch (job.name) {
       case JOB_NAMES.RIOT_ACCOUNT_INITIAL_SYNC:
+        await this.riotService.syncAccount(
+          job.data.riotAccountId,
+          'initial',
+          job.attemptsMade,
+          job.opts.attempts ?? 1,
+        );
+        break;
       case JOB_NAMES.RIOT_ACCOUNT_REFRESH:
         await this.riotService.syncAccount(
           job.data.riotAccountId,
+          'refresh',
           job.attemptsMade,
           job.opts.attempts ?? 1,
         );

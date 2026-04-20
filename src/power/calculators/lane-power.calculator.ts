@@ -6,6 +6,7 @@ import { POWER_ROLES, PowerRole } from '../power.constants';
 export interface LanePowerRoleBreakdown {
   role: PowerRole;
   lanePower: number;
+  lanePowerBeforeSpread: number;
   laneAdjustment: number;
   matches: number;
   roleShare: number;
@@ -18,17 +19,23 @@ export interface LanePowerRoleBreakdown {
   preferenceBonus: number;
   experienceAdjustment: number;
   proficiencyAdjustment: number;
+  spreadAdjustment: number;
 }
 
 export interface LanePowerBreakdown {
   lanePower: Record<PowerRole, number>;
   laneAdjustments: Record<PowerRole, number>;
+  lanePowerBeforeSpread: Record<PowerRole, number>;
+  spreadAdjustments: Record<PowerRole, number>;
+  spreadMultiplier: number;
   roles: Record<PowerRole, LanePowerRoleBreakdown>;
   formula: string;
 }
 
 @Injectable()
 export class LanePowerCalculator {
+  private readonly spreadMultiplier = 1.28;
+
   calculate(
     basePower: number,
     aggregateSummary?: Record<string, unknown> | null,
@@ -59,35 +66,37 @@ export class LanePowerCalculator {
       const visionScore = Number(metrics.visionScore ?? 20);
 
       const roleShare = sampleSize > 0 ? matches / sampleSize : 0;
-      const roleConfidence = this.clamp(matches / 8, 0, 1);
-      const roleEvidenceFactor = this.clamp(0.4 + roleConfidence * 0.6, 0.4, 1);
+      const roleConfidence = this.clamp(matches / 6.5, 0, 1);
+      const roleEvidenceFactor = this.clamp(0.3 + roleConfidence * 0.7, 0.3, 1);
       const preferenceBonus =
-        role === primaryPosition ? 4.5 : role === secondaryPosition ? 2 : -2.5;
+        role === primaryPosition ? 6.2 : role === secondaryPosition ? 2.8 : -3.6;
       const experienceAdjustment = this.clamp(
-        (roleShare - 0.2) * 14 * roleConfidence,
-        -2.5,
-        4.5,
+        (roleShare - 0.18) * 20 * roleConfidence,
+        -4.2,
+        6.8,
       );
       const visionBaseline = role === Position.SUPPORT ? 24 : 18;
-      const visionWeight = role === Position.SUPPORT ? 0.2 : 0.08;
+      const visionWeight = role === Position.SUPPORT ? 0.24 : 0.1;
       const proficiencyAdjustment = this.clamp(
-        ((winRate - 0.5) * 18 +
-          (kda - 2.5) * 2.8 +
-          laneInfluence * 0.45 +
+        ((winRate - 0.5) * 22 +
+          (kda - 2.5) * 3.2 +
+          laneInfluence * 0.55 +
           (visionScore - visionBaseline) * visionWeight) *
           roleEvidenceFactor,
-        -5,
-        5.5,
+        -6.8,
+        7.6,
       );
       const laneAdjustment = this.clamp(
         preferenceBonus + experienceAdjustment + proficiencyAdjustment,
-        -6,
-        8,
+        -8.4,
+        10.8,
       );
+      const lanePowerBeforeSpread = this.clamp(basePower + laneAdjustment, 0, 100);
 
       acc[role] = {
         role,
-        lanePower: this.clamp(basePower + laneAdjustment, 0, 100),
+        lanePower: lanePowerBeforeSpread,
+        lanePowerBeforeSpread,
         laneAdjustment,
         matches,
         roleShare: Number(roleShare.toFixed(4)),
@@ -100,9 +109,32 @@ export class LanePowerCalculator {
         preferenceBonus,
         experienceAdjustment,
         proficiencyAdjustment,
+        spreadAdjustment: 0,
       };
       return acc;
     }, {} as Record<PowerRole, LanePowerRoleBreakdown>);
+    const averageLanePower =
+      POWER_ROLES.reduce((sum, role) => sum + roles[role].lanePowerBeforeSpread, 0) /
+      POWER_ROLES.length;
+
+    for (const role of POWER_ROLES) {
+      const before = roles[role].lanePowerBeforeSpread;
+      const after = this.clamp(
+        averageLanePower + (before - averageLanePower) * this.spreadMultiplier,
+        0,
+        100,
+      );
+      const spreadAdjustment = this.clamp(after - before, -2.8, 2.8);
+      const boundedSpreadAdjustment = this.clamp(spreadAdjustment, -1.8, 1.8);
+
+      roles[role].lanePower = this.clamp(before + boundedSpreadAdjustment, 0, 100);
+      roles[role].spreadAdjustment = boundedSpreadAdjustment;
+      roles[role].laneAdjustment = this.clamp(
+        roles[role].laneAdjustment + boundedSpreadAdjustment,
+        -10.2,
+        12.6,
+      );
+    }
 
     return {
       lanePower: POWER_ROLES.reduce<Record<PowerRole, number>>((acc, role) => {
@@ -113,8 +145,18 @@ export class LanePowerCalculator {
         acc[role] = roles[role].laneAdjustment;
         return acc;
       }, {} as Record<PowerRole, number>),
+      lanePowerBeforeSpread: POWER_ROLES.reduce<Record<PowerRole, number>>((acc, role) => {
+        acc[role] = roles[role].lanePowerBeforeSpread;
+        return acc;
+      }, {} as Record<PowerRole, number>),
+      spreadAdjustments: POWER_ROLES.reduce<Record<PowerRole, number>>((acc, role) => {
+        acc[role] = roles[role].spreadAdjustment;
+        return acc;
+      }, {} as Record<PowerRole, number>),
+      spreadMultiplier: this.spreadMultiplier,
       roles,
-      formula: 'lanePower(role) = basePower + clamp(preference + experience + proficiency, -6, +8)',
+      formula:
+        'lanePower(role) = basePower + clamp(preference + experience + proficiency, -8.4, +10.8), then apply 1.28x spread around lane average',
     };
   }
 

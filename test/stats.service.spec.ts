@@ -45,7 +45,10 @@ describe('Stats calculations', () => {
       },
     } as any;
 
-    const service = new UsersService(prismaService);
+    const service = new UsersService(
+      prismaService,
+      { getTopChampionsForUser: jest.fn().mockResolvedValue([]) } as any,
+    );
     const result = await service.getUserStats(
       { userId: 'u1', email: 'u1@example.com' },
       'u1',

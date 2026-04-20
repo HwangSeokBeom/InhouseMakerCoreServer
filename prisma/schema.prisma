@@ -240,6 +240,13 @@ model RiotAccount {
   lastSyncWarningMessage String?            @map("last_sync_warning_message")
   lastSyncedAt       DateTime?              @map("last_synced_at")
   lastSyncError      String?                @map("last_sync_error")
+  syncPhase          String?                @map("sync_phase")
+  lastSyncProgressAt DateTime?              @map("last_sync_progress_at")
+  processedMatchCount Int                   @default(0) @map("processed_match_count")
+  queuedMatchCount   Int                    @default(0) @map("queued_match_count")
+  hasUsableSnapshot  Boolean                @default(false) @map("has_usable_snapshot")
+  matchHistoryNextStart Int                 @default(0) @map("match_history_next_start")
+  matchHistoryComplete Boolean              @default(false) @map("match_history_complete")
   createdAt          DateTime               @default(now()) @map("created_at")
   updatedAt          DateTime               @updatedAt @map("updated_at")
 
@@ -272,6 +279,35 @@ model RiotAccountSnapshot {
   @@index([riotAccountId, collectedAt])
   @@index([snapshotType, collectedAt])
   @@map("riot_account_snapshots")
+}
+
+model RiotMatchParticipantSummary {
+  id            String   @id @default(cuid())
+  riotMatchId   String   @map("riot_match_id")
+  puuid         String
+  queueId       Int?     @map("queue_id")
+  queueCategory String   @map("queue_category")
+  gameMode      String?  @map("game_mode")
+  gameType      String?  @map("game_type")
+  mapId         Int?     @map("map_id")
+  playedAt      DateTime @map("played_at")
+  seasonKey     String   @map("season_key")
+  championId    Int?     @map("champion_id")
+  championKey   String?  @map("champion_key")
+  championName  String?  @map("champion_name")
+  kills         Int      @default(0)
+  deaths        Int      @default(0)
+  assists       Int      @default(0)
+  didWin        Boolean? @map("did_win")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@unique([riotMatchId, puuid])
+  @@index([puuid, playedAt])
+  @@index([puuid, seasonKey])
+  @@index([puuid, championId, playedAt])
+  @@index([puuid, championKey, playedAt])
+  @@map("riot_match_participant_summaries")
 }
 
 model PlayerPowerProfile {

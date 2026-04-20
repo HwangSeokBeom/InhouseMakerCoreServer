@@ -16,6 +16,11 @@ export interface AppConfig {
   RIOT_PLATFORM_REGION: string;
   RIOT_SYNC_MAX_RETRIES: number;
   RIOT_SYNC_BACKOFF_MS: number;
+  RIOT_INITIAL_SYNC_MATCH_COUNT: number;
+  RIOT_MATCH_HISTORY_PAGE_SIZE: number;
+  RIOT_MATCH_HISTORY_EXTRA_PAGES_PER_SYNC: number;
+  RIOT_MATCH_DETAIL_BATCH_SIZE: number;
+  RIOT_SYNC_STALE_MS: number;
   APPLE_CLIENT_ID?: string;
   APPLE_AUDIENCE?: string;
   GOOGLE_CLIENT_ID?: string;
@@ -41,6 +46,11 @@ export const envValidationSchema = Joi.object<AppConfig>({
   RIOT_PLATFORM_REGION: Joi.string().required(),
   RIOT_SYNC_MAX_RETRIES: Joi.number().integer().min(1).default(5),
   RIOT_SYNC_BACKOFF_MS: Joi.number().integer().min(100).default(2000),
+  RIOT_INITIAL_SYNC_MATCH_COUNT: Joi.number().integer().min(10).max(50).default(25),
+  RIOT_MATCH_HISTORY_PAGE_SIZE: Joi.number().integer().min(20).max(100).default(100),
+  RIOT_MATCH_HISTORY_EXTRA_PAGES_PER_SYNC: Joi.number().integer().min(0).max(5).default(1),
+  RIOT_MATCH_DETAIL_BATCH_SIZE: Joi.number().integer().min(1).max(20).default(5),
+  RIOT_SYNC_STALE_MS: Joi.number().integer().min(60_000).default(900_000),
   APPLE_CLIENT_ID: Joi.string().optional(),
   APPLE_AUDIENCE: Joi.string().optional(),
   GOOGLE_CLIENT_ID: Joi.string().optional(),

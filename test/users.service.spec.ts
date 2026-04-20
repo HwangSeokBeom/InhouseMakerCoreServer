@@ -27,6 +27,25 @@ describe('UsersService', () => {
       count: jest.fn(),
     },
   } as any;
+  const riotChampionSummaryService = {
+    getTopChampionsForUser: jest.fn(),
+    getTopChampionSummaryForUser: jest.fn(),
+  } as any;
+  const emptyChampionSummary = {
+    topChampions: [],
+    aggregationStatus: {
+      status: 'EMPTY',
+      reason: 'no_sync',
+      message: 'test',
+      hasUsableContent: false,
+      totalMatches: 0,
+      rankedMatches: 0,
+      eligibleMatches: 0,
+      mappedMatches: 0,
+      thresholdUsed: null,
+      syncCoverageSummary: {},
+    },
+  };
 
   let service: UsersService;
   let loggerLogSpy: jest.SpyInstance;
@@ -34,7 +53,11 @@ describe('UsersService', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     loggerLogSpy = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
-    service = new UsersService(prismaService);
+    riotChampionSummaryService.getTopChampionsForUser.mockResolvedValue([]);
+    riotChampionSummaryService.getTopChampionSummaryForUser.mockResolvedValue(
+      emptyChampionSummary,
+    );
+    service = new UsersService(prismaService, riotChampionSummaryService);
   });
 
   afterEach(() => {
@@ -124,6 +147,32 @@ describe('UsersService', () => {
           },
         }),
       }),
+    );
+  });
+
+  it('returns a profile summary with safe topChampions defaults', async () => {
+    prismaService.user.findUnique.mockResolvedValue({
+      id: 'user-1',
+      nickname: 'ProfileUser',
+      primaryPosition: Position.MID,
+      secondaryPosition: Position.ADC,
+      isFillAvailable: true,
+      powerProfile: { overallPower: 73.4, lanePowerJson: { MID: 76, ADC: 72 } },
+      styleTags: ['shotcaller'],
+      mannerScore: 98,
+      noshowCount: 0,
+    });
+
+    const response = await service.getUserProfile('user-1', 'user-1');
+
+    expect(response).toMatchObject({
+      userId: 'user-1',
+      recentPower: 73.4,
+      topChampions: [],
+      topChampionAggregationStatus: emptyChampionSummary.aggregationStatus,
+    });
+    expect(riotChampionSummaryService.getTopChampionSummaryForUser).toHaveBeenCalledWith(
+      'user-1',
     );
   });
 
