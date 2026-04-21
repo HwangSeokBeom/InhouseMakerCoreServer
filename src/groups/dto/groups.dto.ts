@@ -287,7 +287,10 @@ export class GroupDetailResponseDto {
   @ApiProperty()
   memberCount!: number;
 
-  @ApiProperty()
+  @ApiProperty({
+    description:
+      'Count of completed inhouse matches with confirmed results. A value of 0 means no completed inhouse history.',
+  })
   recentMatches!: number;
 
   @ApiProperty()

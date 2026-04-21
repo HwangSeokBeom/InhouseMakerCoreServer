@@ -18,6 +18,7 @@ import { AppErrorCode, AppException } from '../common/app.exception';
 import { buildMissingResourceDebugDetails } from '../common/request-debug.util';
 import { GroupsService } from '../groups/groups.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { REALIZED_INHOUSE_MATCH_STATUSES } from './match-status.policy';
 import {
   AddMatchPlayersDto,
   CreateMatchDto,
@@ -117,6 +118,9 @@ export class MatchesService {
     const matches = await this.prismaService.inhouseMatch.findMany({
       where: {
         ...(query.groupId ? { groupId: query.groupId } : {}),
+        status: {
+          in: REALIZED_INHOUSE_MATCH_STATUSES,
+        },
         group: {
           archivedAt: null,
           members: {

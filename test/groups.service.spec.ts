@@ -1,8 +1,22 @@
+import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { ForbiddenException, NotFoundException } from '@nestjs/common';
-import { GroupRole, GroupVisibility, JoinPolicy, Position, Prisma } from '@prisma/client';
+import {
+  GroupRole,
+  GroupVisibility,
+  JoinPolicy,
+  MatchStatus,
+  Position,
+  Prisma,
+  ResultStatus,
+  TeamSide,
+} from '@prisma/client';
 
 import { AppException } from '../src/common/app.exception';
 import { GroupsService } from '../src/groups/groups.service';
+import {
+  COMPLETED_INHOUSE_MATCH_STATUSES,
+  REALIZED_INHOUSE_MATCH_STATUSES,
+} from '../src/matches/match-status.policy';
 
 describe('GroupsService', () => {
   const prismaService = {
@@ -16,6 +30,11 @@ describe('GroupsService', () => {
       findUnique: jest.fn(),
       findMany: jest.fn(),
       create: jest.fn(),
+    },
+    inhouseMatch: {
+      count: jest.fn(),
+      groupBy: jest.fn(),
+      findMany: jest.fn(),
     },
     inhousePlayerStat: {
       findMany: jest.fn(),
@@ -57,6 +76,9 @@ describe('GroupsService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    prismaService.inhouseMatch.count.mockResolvedValue(0);
+    prismaService.inhouseMatch.groupBy.mockResolvedValue([]);
+    prismaService.inhouseMatch.findMany.mockResolvedValue([]);
     service = new GroupsService(prismaService, auditLogService, usersService);
   });
 
@@ -202,6 +224,50 @@ describe('GroupsService', () => {
       orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }],
       take: 20,
     });
+  });
+
+  it('counts only completed matches with confirmed results in the public list', async () => {
+    prismaService.inhouseGroup.findMany.mockResolvedValue([
+      makeGroup({
+        id: 'group1',
+        visibility: GroupVisibility.PUBLIC,
+        _count: { members: 3, matches: 5, recruitingPosts: 1 },
+      }),
+    ]);
+    prismaService.inhouseMatch.groupBy.mockResolvedValue([
+      {
+        groupId: 'group1',
+        _count: { _all: 2 },
+      },
+    ]);
+
+    const result = await service.listPublicGroups({});
+
+    expect(prismaService.inhouseMatch.groupBy).toHaveBeenCalledWith({
+      by: ['groupId'],
+      where: {
+        groupId: {
+          in: ['group1'],
+        },
+        status: {
+          in: COMPLETED_INHOUSE_MATCH_STATUSES,
+        },
+        result: {
+          is: {
+            resultStatus: ResultStatus.CONFIRMED,
+          },
+        },
+      },
+      _count: {
+        _all: true,
+      },
+    });
+    expect(result.items).toEqual([
+      expect.objectContaining({
+        id: 'group1',
+        recentMatches: 2,
+      }),
+    ]);
   });
 
   it('treats archived groups as not found on detail fetches', async () => {
@@ -482,6 +548,224 @@ describe('GroupsService', () => {
     });
     expect(listMembersSpy).toHaveBeenCalledWith('leader1', 'group1');
     expect(result).toEqual({ items: [] });
+  });
+
+  it('returns zero recentMatches immediately after group creation', async () => {
+    prismaService.inhouseGroup.create.mockResolvedValue({
+      id: 'group1',
+      ownerUserId: 'owner1',
+      name: 'Alpha Inhouse',
+      region: 'kr',
+      description: 'Seed group',
+      visibility: GroupVisibility.PRIVATE,
+      joinPolicy: JoinPolicy.INVITE_ONLY,
+      tags: ['competitive'],
+    });
+
+    const result = await service.createGroup('owner1', {
+      name: 'Alpha Inhouse',
+      region: 'kr',
+      description: 'Seed group',
+      visibility: GroupVisibility.PRIVATE,
+      joinPolicy: JoinPolicy.INVITE_ONLY,
+      tags: ['competitive'],
+    });
+
+    expect(result.recentMatches).toBe(0);
+  });
+
+  it('does not count a newly created recruiting lobby in recentMatches', async () => {
+    prismaService.inhouseGroup.findFirst.mockResolvedValue(
+      makeGroup({
+        members: [{ userId: 'owner1', role: GroupRole.OWNER }],
+        _count: { members: 3, matches: 1, recruitingPosts: 1 },
+      }),
+    );
+    prismaService.user.findUnique.mockResolvedValue({ isAdmin: false });
+    prismaService.inhouseMatch.count.mockResolvedValueOnce(0);
+
+    const result = await service.getGroup('owner1', 'group1');
+
+    expect(prismaService.inhouseMatch.count).toHaveBeenCalledWith({
+      where: {
+        groupId: 'group1',
+        status: {
+          in: COMPLETED_INHOUSE_MATCH_STATUSES,
+        },
+        result: {
+          is: {
+            resultStatus: ResultStatus.CONFIRMED,
+          },
+        },
+      },
+    });
+    expect(result.recentMatches).toBe(0);
+  });
+
+  it('does not count a partially filled recruiting lobby in recentMatches', async () => {
+    prismaService.inhouseGroup.findFirst.mockResolvedValue(
+      makeGroup({
+        members: [{ userId: 'owner1', role: GroupRole.OWNER }],
+        _count: { members: 3, matches: 1, recruitingPosts: 1 },
+      }),
+    );
+    prismaService.user.findUnique.mockResolvedValue({ isAdmin: false });
+    prismaService.inhouseMatch.count.mockResolvedValueOnce(0);
+
+    const result = await service.getGroup('owner1', 'group1');
+
+    expect(result.recentMatches).toBe(0);
+  });
+
+  it('does not count a balanced pre-start lobby in recentMatches', async () => {
+    prismaService.inhouseGroup.findFirst.mockResolvedValue(
+      makeGroup({
+        members: [{ userId: 'owner1', role: GroupRole.OWNER }],
+        _count: { members: 3, matches: 1, recruitingPosts: 1 },
+      }),
+    );
+    prismaService.user.findUnique.mockResolvedValue({ isAdmin: false });
+    prismaService.inhouseMatch.count.mockResolvedValueOnce(0);
+
+    const result = await service.getGroup('owner1', 'group1');
+
+    expect(result.recentMatches).toBe(0);
+  });
+
+  it('counts a match only after its result is confirmed', async () => {
+    prismaService.inhouseGroup.findFirst.mockResolvedValue(
+      makeGroup({
+        members: [{ userId: 'owner1', role: GroupRole.OWNER }],
+        _count: { members: 3, matches: 1, recruitingPosts: 1 },
+      }),
+    );
+    prismaService.user.findUnique.mockResolvedValue({ isAdmin: false });
+    prismaService.inhouseMatch.count.mockResolvedValueOnce(1);
+
+    const result = await service.getGroup('owner1', 'group1');
+
+    expect(result.recentMatches).toBe(1);
+  });
+
+  it('does not count result-pending or disputed matches in recentMatches', async () => {
+    prismaService.inhouseGroup.findFirst.mockResolvedValue(
+      makeGroup({
+        members: [{ userId: 'owner1', role: GroupRole.OWNER }],
+        _count: { members: 3, matches: 2, recruitingPosts: 1 },
+      }),
+    );
+    prismaService.user.findUnique.mockResolvedValue({ isAdmin: false });
+    prismaService.inhouseMatch.count.mockResolvedValueOnce(0);
+
+    const result = await service.getGroup('owner1', 'group1');
+
+    expect(prismaService.inhouseMatch.count).toHaveBeenCalledWith({
+      where: {
+        groupId: 'group1',
+        status: {
+          in: COMPLETED_INHOUSE_MATCH_STATUSES,
+        },
+        result: {
+          is: {
+            resultStatus: ResultStatus.CONFIRMED,
+          },
+        },
+      },
+    });
+    expect(result.recentMatches).toBe(0);
+  });
+
+  it('does not increase recentMatches for multiple non-realized lobbies', async () => {
+    prismaService.inhouseGroup.findFirst.mockResolvedValue(
+      makeGroup({
+        members: [{ userId: 'owner1', role: GroupRole.OWNER }],
+        _count: { members: 3, matches: 4, recruitingPosts: 1 },
+      }),
+    );
+    prismaService.user.findUnique.mockResolvedValue({ isAdmin: false });
+    prismaService.inhouseMatch.count.mockResolvedValueOnce(0);
+
+    const result = await service.getGroup('owner1', 'group1');
+
+    expect(result.recentMatches).toBe(0);
+  });
+
+  it('counts only realized matches when waiting lobbies coexist with completed matches', async () => {
+    prismaService.inhouseGroup.findFirst.mockResolvedValue(
+      makeGroup({
+        members: [{ userId: 'owner1', role: GroupRole.OWNER }],
+        _count: { members: 3, matches: 5, recruitingPosts: 1 },
+      }),
+    );
+    prismaService.user.findUnique.mockResolvedValue({ isAdmin: false });
+    prismaService.inhouseMatch.count.mockResolvedValueOnce(2);
+
+    const result = await service.getGroup('owner1', 'group1');
+
+    expect(result.recentMatches).toBe(2);
+  });
+
+  it('filters group recent matches to realized statuses only', async () => {
+    prismaService.inhouseGroup.findFirst.mockResolvedValue({
+      id: 'group1',
+      ownerUserId: 'owner1',
+      archivedAt: null,
+      visibility: GroupVisibility.PRIVATE,
+      members: [{ userId: 'owner1', role: GroupRole.OWNER }],
+    });
+    prismaService.inhouseMatch.findMany.mockResolvedValue([
+      {
+        id: 'match-confirmed',
+        groupId: 'group1',
+        title: 'Confirmed match',
+        status: MatchStatus.CONFIRMED,
+        scheduledAt: new Date('2026-04-18T10:00:00.000Z'),
+        updatedAt: new Date('2026-04-18T12:00:00.000Z'),
+        result: {
+          winningTeam: TeamSide.A,
+          resultStatus: ResultStatus.CONFIRMED,
+        },
+        group: {
+          id: 'group1',
+          name: 'Alpha Inhouse',
+        },
+        players: [{ id: 'p1' }],
+      },
+    ]);
+
+    const result = await service.getRecentMatches('owner1', 'group1', { limit: 10 });
+
+    expect(prismaService.inhouseMatch.findMany).toHaveBeenCalledWith({
+      where: {
+        groupId: 'group1',
+        status: {
+          in: REALIZED_INHOUSE_MATCH_STATUSES,
+        },
+        group: {
+          archivedAt: null,
+        },
+      },
+      include: {
+        result: true,
+        group: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+        players: {
+          select: { id: true },
+        },
+      },
+      orderBy: [{ scheduledAt: 'desc' }, { createdAt: 'desc' }],
+      take: 10,
+    });
+    expect(result.items).toEqual([
+      expect.objectContaining({
+        matchId: 'match-confirmed',
+        status: MatchStatus.CONFIRMED,
+      }),
+    ]);
   });
 
   it('maps group membership FK races back to USER_NOT_FOUND or GROUP_NOT_FOUND', async () => {

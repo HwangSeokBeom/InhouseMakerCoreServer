@@ -6,10 +6,20 @@ import {
   ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
-import { GroupRole, GroupVisibility, Prisma, UserStatus } from '@prisma/client';
+import {
+  GroupRole,
+  GroupVisibility,
+  Prisma,
+  ResultStatus,
+  UserStatus,
+} from '@prisma/client';
 
 import { AuditLogService } from '../common/audit-log.service';
 import { AppErrorCode, AppException } from '../common/app.exception';
+import {
+  COMPLETED_INHOUSE_MATCH_STATUSES,
+  REALIZED_INHOUSE_MATCH_STATUSES,
+} from '../matches/match-status.policy';
 import {
   buildAccessDeniedDebugDetails,
   buildMissingResourceDebugDetails,
@@ -111,12 +121,19 @@ export class GroupsService {
       orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }],
       take: query.limit ?? 20,
     });
+    const recentMatchCountByGroupId = await this.getCompletedMatchCountsByGroupIds(
+      groups.map((group) => group.id),
+    );
 
     return {
       items: groups.map((group) =>
         this.toGroupDetail(
           {
             ...group,
+            _count: {
+              ...group._count,
+              matches: recentMatchCountByGroupId.get(group.id) ?? 0,
+            },
             archivedAt: null,
           },
           {
@@ -129,7 +146,7 @@ export class GroupsService {
   }
 
   async getGroup(requesterUserId: string, groupId: string): Promise<GroupDetailResponseDto> {
-    const [group, requesterIsSystemAdmin] = await Promise.all([
+    const [group, requesterIsSystemAdmin, completedMatchCount] = await Promise.all([
       this.prismaService.inhouseGroup.findFirst({
         where: {
           id: groupId,
@@ -154,6 +171,7 @@ export class GroupsService {
         },
       }),
       this.getRequesterAdminFlag(requesterUserId),
+      this.getCompletedMatchCount(groupId),
     ]);
 
     if (!group) {
@@ -203,10 +221,19 @@ export class GroupsService {
       `[GroupLiveDebug] groupId=${group.id} memberCount=${group._count.members} source=live`,
     );
 
-    return this.toGroupDetail(group, {
-      requesterUserId,
-      requesterIsSystemAdmin,
-    });
+    return this.toGroupDetail(
+      {
+        ...group,
+        _count: {
+          ...group._count,
+          matches: completedMatchCount,
+        },
+      },
+      {
+        requesterUserId,
+        requesterIsSystemAdmin,
+      },
+    );
   }
 
   async updateGroup(
@@ -325,10 +352,21 @@ export class GroupsService {
     });
 
     this.logGroupMutation(mutationLog);
-    return this.toGroupDetail(updated, {
-      requesterUserId,
-      requesterIsSystemAdmin: isAdmin,
-    });
+    const completedMatchCount = await this.getCompletedMatchCount(groupId);
+
+    return this.toGroupDetail(
+      {
+        ...updated,
+        _count: {
+          ...updated._count,
+          matches: completedMatchCount,
+        },
+      },
+      {
+        requesterUserId,
+        requesterIsSystemAdmin: isAdmin,
+      },
+    );
   }
 
   async deleteGroup(
@@ -740,6 +778,9 @@ export class GroupsService {
     const matches = await this.prismaService.inhouseMatch.findMany({
       where: {
         groupId,
+        status: {
+          in: REALIZED_INHOUSE_MATCH_STATUSES,
+        },
         group: {
           archivedAt: null,
         },
@@ -1053,6 +1094,52 @@ export class GroupsService {
 
     const normalizedTagLine = tagLine?.trim();
     return normalizedTagLine ? `${normalizedGameName}#${normalizedTagLine}` : normalizedGameName;
+  }
+
+  private async getCompletedMatchCount(groupId: string): Promise<number> {
+    return this.prismaService.inhouseMatch.count({
+      where: this.buildCompletedMatchCountWhere({
+        groupId,
+      }),
+    });
+  }
+
+  private async getCompletedMatchCountsByGroupIds(
+    groupIds: string[],
+  ): Promise<Map<string, number>> {
+    if (groupIds.length === 0) {
+      return new Map();
+    }
+
+    const rows = await this.prismaService.inhouseMatch.groupBy({
+      by: ['groupId'],
+      where: this.buildCompletedMatchCountWhere({
+        groupId: {
+          in: groupIds,
+        },
+      }),
+      _count: {
+        _all: true,
+      },
+    });
+
+    return new Map(rows.map((row) => [row.groupId, row._count._all]));
+  }
+
+  private buildCompletedMatchCountWhere(
+    where: Prisma.InhouseMatchWhereInput,
+  ): Prisma.InhouseMatchWhereInput {
+    return {
+      ...where,
+      status: {
+        in: COMPLETED_INHOUSE_MATCH_STATUSES,
+      },
+      result: {
+        is: {
+          resultStatus: ResultStatus.CONFIRMED,
+        },
+      },
+    };
   }
 
   private async getRequesterAdminFlag(

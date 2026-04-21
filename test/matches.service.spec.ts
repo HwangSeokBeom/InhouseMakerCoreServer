@@ -1,6 +1,8 @@
+import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { GroupRole, MatchStatus, ParticipationStatus, Position, ResultStatus } from '@prisma/client';
 
 import { AppErrorCode, AppException } from '../src/common/app.exception';
+import { REALIZED_INHOUSE_MATCH_STATUSES } from '../src/matches/match-status.policy';
 import { MatchesService } from '../src/matches/matches.service';
 
 describe('MatchesService', () => {
@@ -12,6 +14,7 @@ describe('MatchesService', () => {
       findUnique: jest.fn(),
     },
     inhouseMatch: {
+      findMany: jest.fn(),
       findUnique: jest.fn(),
       update: jest.fn(),
     },
@@ -534,5 +537,69 @@ describe('MatchesService', () => {
     );
     expect(response.status).toBe(MatchStatus.BALANCED);
     expect(response.manualBalance?.updatedBy).toBe('host1');
+  });
+
+  it('filters recent match lists to realized statuses only', async () => {
+    prismaService.inhouseMatch.findMany.mockResolvedValue([
+      {
+        id: 'm1',
+        groupId: 'g1',
+        group: {
+          id: 'g1',
+          name: 'Alpha',
+        },
+        title: 'Confirmed match',
+        status: MatchStatus.CONFIRMED,
+        scheduledAt: new Date('2026-04-18T10:00:00.000Z'),
+        updatedAt: new Date('2026-04-18T12:00:00.000Z'),
+        result: {
+          winningTeam: 'A',
+          resultStatus: ResultStatus.CONFIRMED,
+        },
+        players: [{ id: 'p1' }],
+      },
+    ]);
+
+    const response = await service.listRecentMatches('viewer1', { groupId: 'g1', limit: 20 });
+
+    expect(groupsService.assertGroupMember).toHaveBeenCalledWith('g1', 'viewer1');
+    expect(prismaService.inhouseMatch.findMany).toHaveBeenCalledWith({
+      where: {
+        groupId: 'g1',
+        status: {
+          in: REALIZED_INHOUSE_MATCH_STATUSES,
+        },
+        group: {
+          archivedAt: null,
+          members: {
+            some: {
+              userId: 'viewer1',
+            },
+          },
+        },
+      },
+      include: {
+        group: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+        result: true,
+        players: {
+          select: {
+            id: true,
+          },
+        },
+      },
+      orderBy: [{ scheduledAt: 'desc' }, { updatedAt: 'desc' }, { createdAt: 'desc' }],
+      take: 20,
+    });
+    expect(response.items).toEqual([
+      expect.objectContaining({
+        matchId: 'm1',
+        status: MatchStatus.CONFIRMED,
+      }),
+    ]);
   });
 });
