@@ -20,6 +20,13 @@ describe('UsersService', () => {
     authIdentity: {
       deleteMany: jest.fn(),
     },
+    riotAccount: {
+      findMany: jest.fn(),
+      deleteMany: jest.fn(),
+    },
+    riotMatchParticipantSummary: {
+      deleteMany: jest.fn(),
+    },
     userBlock: {
       deleteMany: jest.fn(),
     },
@@ -32,6 +39,7 @@ describe('UsersService', () => {
     },
     playerPowerProfile: {
       findUnique: jest.fn(),
+      deleteMany: jest.fn(),
     },
     groupMember: {
       count: jest.fn(),
@@ -310,7 +318,7 @@ describe('UsersService', () => {
     expect(response.profileImageUrl).toBeNull();
   });
 
-  it('withdraws the current account, anonymizes personal fields, and clears blocks and identities', async () => {
+  it('withdraws the current account and deletes Riot-derived personal data', async () => {
     const fileStorage = {
       store: jest.fn(),
       deleteByUrl: jest.fn(),
@@ -326,6 +334,13 @@ describe('UsersService', () => {
       profileImageUrl: '/uploads/profile-images/old.jpg',
     });
     prismaService.authIdentity.deleteMany.mockResolvedValue({ count: 1 });
+    prismaService.riotAccount.findMany.mockResolvedValue([
+      { puuid: 'puuid-1' },
+      { puuid: 'puuid-1' },
+    ]);
+    prismaService.riotMatchParticipantSummary.deleteMany.mockResolvedValue({ count: 3 });
+    prismaService.playerPowerProfile.deleteMany.mockResolvedValue({ count: 1 });
+    prismaService.riotAccount.deleteMany.mockResolvedValue({ count: 1 });
     prismaService.user.update.mockResolvedValue({});
     prismaService.userBlock.deleteMany.mockResolvedValue({ count: 2 });
 
@@ -335,7 +350,19 @@ describe('UsersService', () => {
       expect.any(Promise),
       expect.any(Promise),
       expect.any(Promise),
+      expect.any(Promise),
+      expect.any(Promise),
+      expect.any(Promise),
     ]);
+    expect(prismaService.riotMatchParticipantSummary.deleteMany).toHaveBeenCalledWith({
+      where: { puuid: { in: ['puuid-1'] } },
+    });
+    expect(prismaService.playerPowerProfile.deleteMany).toHaveBeenCalledWith({
+      where: { userId: 'user-1' },
+    });
+    expect(prismaService.riotAccount.deleteMany).toHaveBeenCalledWith({
+      where: { userId: 'user-1' },
+    });
     expect(prismaService.user.update).toHaveBeenCalledWith({
       where: { id: 'user-1' },
       data: expect.objectContaining({
@@ -344,6 +371,9 @@ describe('UsersService', () => {
         status: UserStatus.WITHDRAWN,
         refreshTokenHash: null,
         profileImageUrl: null,
+        primaryPosition: null,
+        secondaryPosition: null,
+        styleTags: expect.anything(),
       }),
     });
     expect(fileStorage.deleteByUrl).toHaveBeenCalledWith('/uploads/profile-images/old.jpg');
