@@ -3,7 +3,7 @@ module.exports = {
     {
       name: 'inhouse-maker-server-development',
       cwd: __dirname,
-      script: 'dist/main.js',
+      script: 'dist/src/main.js',
       instances: 1,
       exec_mode: 'fork',
       autorestart: true,
@@ -19,7 +19,7 @@ module.exports = {
     {
       name: 'inhouse-maker-server-production',
       cwd: __dirname,
-      script: 'dist/main.js',
+      script: 'dist/src/main.js',
       instances: 1,
       exec_mode: 'fork',
       autorestart: true,
