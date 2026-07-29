@@ -58,6 +58,7 @@ GitHub repository의 `Settings -> Environments` 에서 아래 두 environment를
 기본 애플리케이션 환경 변수는 `.env.example` 을 따르고, 실제 운영 파일은 `.env.development`, `.env.production` 두 개로만 관리한다. 배포용으로는 최소 아래 값들이 필요하다.
 
 - `PORT`
+- `BIND_HOST` (기본값 `127.0.0.1`; reverse proxy 없이 외부에 직접 노출할 때만 명시적으로 변경)
 - `DATABASE_URL`
 - `REDIS_URL`
 - `JWT_ACCESS_SECRET`

@@ -42,4 +42,13 @@ describe('envValidationSchema', () => {
       ]),
     );
   });
+
+  it('binds to loopback by default', () => {
+    const { error, value } = envValidationSchema.validate(baseEnv, {
+      abortEarly: false,
+    });
+
+    expect(error).toBeUndefined();
+    expect(value.BIND_HOST).toBe('127.0.0.1');
+  });
 });

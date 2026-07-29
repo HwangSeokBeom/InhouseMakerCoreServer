@@ -4,6 +4,7 @@ import type { SupportedNodeEnv } from './runtime-env';
 
 export interface AppConfig {
   PORT: number;
+  BIND_HOST: string;
   NODE_ENV: SupportedNodeEnv;
   APP_ENV?: SupportedNodeEnv;
   DATABASE_URL: string;
@@ -38,6 +39,7 @@ export interface AppConfig {
 
 export const envValidationSchema = Joi.object<AppConfig>({
   PORT: Joi.number().default(3000),
+  BIND_HOST: Joi.string().hostname().default('127.0.0.1'),
   NODE_ENV: Joi.string().valid('development', 'test', 'production').default('development'),
   APP_ENV: Joi.string().valid('development', 'test', 'production').optional(),
   DATABASE_URL: Joi.string().uri({ scheme: ['postgresql', 'postgres'] }).required(),
