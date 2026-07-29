@@ -55,6 +55,7 @@ load_environment() {
   export NODE_ENV=production
   export APP_ENV="${DEPLOY_ENV}"
   export PORT="${PORT:-3000}"
+  export BIND_HOST="${BIND_HOST:-127.0.0.1}"
   export HEALTH_CHECK_URL="${HEALTH_CHECK_URL:-http://127.0.0.1:${PORT}/health/ready}"
   export HEALTH_CHECK_MAX_ATTEMPTS="${HEALTH_CHECK_MAX_ATTEMPTS:-20}"
   export HEALTH_CHECK_DELAY_SECONDS="${HEALTH_CHECK_DELAY_SECONDS:-3}"
@@ -123,6 +124,11 @@ build_application() {
   npm run build
 }
 
+prune_development_dependencies() {
+  log "Pruning development-only dependencies from the production runtime."
+  npm prune --omit=dev
+}
+
 reload_pm2() {
   log "Reloading PM2 application ${PM2_APP_NAME}."
 
@@ -184,6 +190,7 @@ main() {
   generate_prisma_client
   build_application
   apply_migrations
+  prune_development_dependencies
   reload_pm2
   run_health_check
 

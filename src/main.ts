@@ -7,7 +7,6 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
-import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import express from 'express';
 import helmet from 'helmet';
 import path from 'node:path';
@@ -55,6 +54,7 @@ async function bootstrap(): Promise<void> {
 
   const allowSwagger = configService.get<boolean>('ALLOW_SWAGGER');
   if (allowSwagger) {
+    const { DocumentBuilder, SwaggerModule } = await import('@nestjs/swagger');
     const swaggerConfig = new DocumentBuilder()
       .setTitle('Inhouse Maker Core Server')
       .setDescription('LoL 5v5 inhouse balancing platform backend MVP')
@@ -68,10 +68,11 @@ async function bootstrap(): Promise<void> {
   await prismaService.enableShutdownHooks(app);
 
   const port = configService.get<number>('PORT', 3000);
-  await app.listen(port);
+  const bindHost = configService.get<string>('BIND_HOST', '127.0.0.1');
+  await app.listen(port, bindHost);
 
   Logger.log('[TestDataCleanup] feature=test_member_injection removed=true', 'TestDataCleanup');
-  Logger.log(`Server listening on port ${port}`, 'Bootstrap');
+  Logger.log(`Server listening on ${bindHost}:${port}`, 'Bootstrap');
 }
 
 function registerProcessDebugHandlers(app: INestApplication): void {
