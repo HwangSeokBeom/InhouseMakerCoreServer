@@ -235,9 +235,27 @@ export class UsersService {
       );
     }
 
+    const riotAccounts = await this.prismaService.riotAccount.findMany({
+      where: { userId },
+      select: { puuid: true },
+    });
+    const puuids = [...new Set(riotAccounts.map((account) => account.puuid))];
     const withdrawnAt = new Date();
     await this.prismaService.$transaction([
       this.prismaService.authIdentity.deleteMany({
+        where: { userId },
+      }),
+      ...(puuids.length > 0
+        ? [
+            this.prismaService.riotMatchParticipantSummary.deleteMany({
+              where: { puuid: { in: puuids } },
+            }),
+          ]
+        : []),
+      this.prismaService.playerPowerProfile.deleteMany({
+        where: { userId },
+      }),
+      this.prismaService.riotAccount.deleteMany({
         where: { userId },
       }),
       this.prismaService.user.update({
@@ -251,7 +269,12 @@ export class UsersService {
           termsAgreedAt: null,
           privacyAgreedAt: null,
           marketingOptInAt: null,
+          primaryPosition: null,
+          secondaryPosition: null,
+          isFillAvailable: false,
           styleTags: Prisma.JsonNull,
+          mannerScore: 100,
+          noshowCount: 0,
           withdrawnAt,
         },
       }),

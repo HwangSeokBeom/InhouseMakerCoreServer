@@ -246,7 +246,6 @@ export class RiotApiClient {
     } catch (error) {
       const axiosError = error as AxiosError;
       const status = axiosError.response?.status;
-      const responseBody = axiosError.response?.data ?? null;
 
       if (status === 429 && attempt <= 3) {
         const retryAfterSeconds = Number(axiosError.response?.headers['retry-after'] ?? 1);
@@ -270,7 +269,7 @@ export class RiotApiClient {
           accountRegion: metadata.accountRegion ?? null,
           platformRegion: metadata.platformRegion ?? null,
           requestParams: metadata.requestParams ?? config.params ?? null,
-          responseBody,
+          upstreamResponseType: this.describeResponseType(axiosError.response?.data),
         })}`,
       );
 
@@ -433,8 +432,22 @@ export class RiotApiClient {
         metadata.stage === 'league_lookup' ? requestPuuid ?? null : null,
       rankedEntryCount:
         metadata.stage === 'league_lookup' && responseArray ? responseArray.length : null,
-      rawResponseBody: metadata.stage === 'summoner_lookup' ? responseBody : undefined,
+      upstreamResponseType: this.describeResponseType(responseBody),
     };
+  }
+
+  private describeResponseType(responseBody: unknown): string {
+    if (Array.isArray(responseBody)) {
+      return `array:${responseBody.length}`;
+    }
+
+    if (responseBody && typeof responseBody === 'object') {
+      return 'object';
+    }
+
+    return responseBody === null || responseBody === undefined
+      ? 'empty'
+      : typeof responseBody;
   }
 
   private readString(value: unknown): string | null {

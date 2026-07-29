@@ -14,106 +14,89 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
-    name: Deploy to production EC2
-    if: github.ref == 'refs/heads/main'
+  validate:
+    name: Validate production release
     runs-on: ubuntu-latest
-    environment: production
     steps:
-      - name: Guard main branch
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test -- --runInBand
+
+  deploy:
+    name: Deploy exact commit to production EC2
+    if: github.ref == 'refs/heads/main'
+    needs: validate
+    runs-on:
+      - self-hosted
+      - linux
+      - x64
+      - inhousemaker-core
+      - deploy
+      - ec2-ap-northeast-2
+    environment: production
+    timeout-minutes: 30
+    env:
+      DEPLOY_PATH: /opt/inhousemaker/server
+
+    steps:
+      - name: Guard production release
         run: |
           set -euo pipefail
-          if [[ "${GITHUB_REF_NAME}" != "main" ]]; then
-            echo "::error::This workflow only deploys the main branch."
-            exit 1
-          fi
+          [[ "${GITHUB_REF_NAME}" == "main" ]]
+          [[ -n "${GITHUB_SHA}" ]]
 
-      - name: Configure SSH
+      - name: Sync production clone to pushed commit
         env:
-          EC2_HOST: ${{ secrets.EC2_HOST }}
-          EC2_SSH_PORT: ${{ secrets.EC2_SSH_PORT }}
-          EC2_USER: ${{ secrets.EC2_USER }}
-          EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          REPOSITORY_TOKEN: ${{ github.token }}
         run: |
-          set -euo pipefail
-
-          : "${EC2_HOST:?EC2_HOST is required}"
-          : "${EC2_SSH_PORT:?EC2_SSH_PORT is required}"
-          : "${EC2_USER:?EC2_USER is required}"
-          : "${EC2_SSH_PRIVATE_KEY:?EC2_SSH_PRIVATE_KEY is required}"
-
-          mkdir -p "${HOME}/.ssh"
-          chmod 700 "${HOME}/.ssh"
-          printf '%s\n' "${EC2_SSH_PRIVATE_KEY}" > "${HOME}/.ssh/id_ed25519"
-          chmod 600 "${HOME}/.ssh/id_ed25519"
-          ssh-keyscan -p "${EC2_SSH_PORT}" -H "${EC2_HOST}" >> "${HOME}/.ssh/known_hosts"
-
-      - name: Bootstrap repository on EC2
-        env:
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
-          EC2_HOST: ${{ secrets.EC2_HOST }}
-          EC2_SSH_PORT: ${{ secrets.EC2_SSH_PORT }}
-          EC2_USER: ${{ secrets.EC2_USER }}
-          TARGET_BRANCH: main
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          DEPLOY_REPOSITORY_URL: https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git
-        run: |
-          set -euo pipefail
-
-          : "${DEPLOY_PATH:?DEPLOY_PATH is required}"
-
-          ssh -p "${EC2_SSH_PORT}" "${EC2_USER}@${EC2_HOST}" \
-            "DEPLOY_PATH='${DEPLOY_PATH}' TARGET_BRANCH='${TARGET_BRANCH}' GITHUB_REPOSITORY='${GITHUB_REPOSITORY}' DEPLOY_REPOSITORY_URL='${DEPLOY_REPOSITORY_URL}' bash -s" <<'EOF'
           set -euo pipefail
 
           if [[ -e "${DEPLOY_PATH}" && ! -d "${DEPLOY_PATH}" ]]; then
-            echo "[bootstrap][error] DEPLOY_PATH exists but is not a directory: ${DEPLOY_PATH}" >&2
+            echo "::error::DEPLOY_PATH exists but is not a directory: ${DEPLOY_PATH}"
             exit 1
           fi
 
-          if [[ -d "${DEPLOY_PATH}" && ! -d "${DEPLOY_PATH}/.git" ]] && [[ -n "$(find "${DEPLOY_PATH}" -mindepth 1 -maxdepth 1 2>/dev/null)" ]]; then
-            echo "[bootstrap][error] DEPLOY_PATH exists and is not a git repository: ${DEPLOY_PATH}" >&2
-            exit 1
-          fi
+          mkdir -p "${DEPLOY_PATH}"
 
           if [[ ! -d "${DEPLOY_PATH}/.git" ]]; then
-            mkdir -p "${DEPLOY_PATH}"
+            if [[ -n "$(find "${DEPLOY_PATH}" -mindepth 1 -maxdepth 1 ! -name '.env.production' 2>/dev/null)" ]]; then
+              echo "::error::DEPLOY_PATH contains unexpected files before bootstrap."
+              exit 1
+            fi
             git -C "${DEPLOY_PATH}" init
             git -C "${DEPLOY_PATH}" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-            git -C "${DEPLOY_PATH}" fetch "${DEPLOY_REPOSITORY_URL}" "${TARGET_BRANCH}"
-            git -C "${DEPLOY_PATH}" checkout -B "${TARGET_BRANCH}" FETCH_HEAD
           fi
-          EOF
 
-      - name: Upload production environment file
+          git -C "${DEPLOY_PATH}" fetch --no-tags \
+            "https://x-access-token:${REPOSITORY_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "${GITHUB_SHA}"
+          git -C "${DEPLOY_PATH}" checkout -B main FETCH_HEAD
+          git -C "${DEPLOY_PATH}" reset --hard "${GITHUB_SHA}"
+
+          [[ "$(git -C "${DEPLOY_PATH}" rev-parse HEAD)" == "${GITHUB_SHA}" ]]
+          [[ -z "$(git -C "${DEPLOY_PATH}" status --porcelain --untracked-files=no)" ]]
+
+      - name: Install production environment
         env:
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
-          EC2_HOST: ${{ secrets.EC2_HOST }}
-          EC2_SSH_PORT: ${{ secrets.EC2_SSH_PORT }}
-          EC2_USER: ${{ secrets.EC2_USER }}
           ENV_FILE: ${{ secrets.ENV_FILE }}
         run: |
           set -euo pipefail
-
           : "${ENV_FILE:?ENV_FILE is required}"
+          umask 077
+          printf '%s' "${ENV_FILE}" > "${DEPLOY_PATH}/.env.production"
 
-          temp_env_file="$(mktemp)"
-          trap 'rm -f "${temp_env_file}"' EXIT
-
-          printf '%s' "${ENV_FILE}" > "${temp_env_file}"
-          scp -P "${EC2_SSH_PORT}" "${temp_env_file}" "${EC2_USER}@${EC2_HOST}:${DEPLOY_PATH}/.env.production"
-          ssh -p "${EC2_SSH_PORT}" "${EC2_USER}@${EC2_HOST}" "chmod 600 '${DEPLOY_PATH}/.env.production'"
-
-      - name: Run production deployment
-        env:
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
-          EC2_HOST: ${{ secrets.EC2_HOST }}
-          EC2_SSH_PORT: ${{ secrets.EC2_SSH_PORT }}
-          EC2_USER: ${{ secrets.EC2_USER }}
-          TARGET_BRANCH: main
-          DEPLOY_REPOSITORY_URL: https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git
+      - name: Deploy and verify readiness
         run: |
           set -euo pipefail
-
-          ssh -p "${EC2_SSH_PORT}" "${EC2_USER}@${EC2_HOST}" \
-            "cd '${DEPLOY_PATH}' && GITHUB_REF_NAME='${TARGET_BRANCH}' DEPLOY_REPOSITORY_URL='${DEPLOY_REPOSITORY_URL}' bash scripts/deploy-production.sh"
+          cd "${DEPLOY_PATH}"
+          GITHUB_REF_NAME=main \
+          SKIP_REPOSITORY_SYNC=1 \
+          EXPECTED_GIT_SHA="${GITHUB_SHA}" \
+            bash scripts/deploy-production.sh

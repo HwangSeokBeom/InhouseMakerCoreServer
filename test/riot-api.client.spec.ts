@@ -111,4 +111,27 @@ describe('RiotApiClient', () => {
       rawResponse,
     });
   });
+
+  it('does not write raw Riot response values to debug logs', async () => {
+    const { client, httpService } = createClient();
+    const sentinel = 'riot-response-private-sentinel';
+    const debugSpy = jest
+      .spyOn((client as any).logger, 'debug')
+      .mockImplementation(() => undefined);
+
+    httpService.request.mockReturnValue(
+      of({
+        status: 200,
+        data: {
+          id: 'encrypted-summoner-id',
+          puuid: 'puuid-1',
+          privateValue: sentinel,
+        },
+      }),
+    );
+
+    await client.getSummonerByPuuid('puuid-1', 'kr');
+
+    expect(debugSpy.mock.calls.flat().join('\n')).not.toContain(sentinel);
+  });
 });
