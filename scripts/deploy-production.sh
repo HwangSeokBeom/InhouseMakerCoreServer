@@ -5,6 +5,8 @@ TARGET_BRANCH="main"
 DEPLOY_ENV="production"
 ENV_FILE=".env.production"
 PM2_APP_NAME="inhouse-maker-server-production"
+SKIP_REPOSITORY_SYNC="${SKIP_REPOSITORY_SYNC:-0}"
+EXPECTED_GIT_SHA="${EXPECTED_GIT_SHA:-}"
 
 log() {
   printf '[deploy][%s] %s\n' "${DEPLOY_ENV}" "$1"
@@ -23,6 +25,17 @@ trap 'on_error "${LINENO}" "${BASH_COMMAND}"' ERR
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "Required command '$1' is not installed."
+}
+
+is_truthy() {
+  case "${1,,}" in
+    1|true|yes|on)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
 }
 
 guard_branch() {
@@ -50,18 +63,39 @@ load_environment() {
 sync_repository() {
   local repo_source="${DEPLOY_REPOSITORY_URL:-origin}"
 
-  log "Fetching latest code from ${TARGET_BRANCH}."
-  git fetch "${repo_source}" "${TARGET_BRANCH}"
+  if is_truthy "${SKIP_REPOSITORY_SYNC}"; then
+    log "Skipping repository sync because the deployment workflow pinned the target commit."
+  else
+    log "Fetching latest code from ${TARGET_BRANCH}."
+    git fetch "${repo_source}" "${TARGET_BRANCH}"
 
-  log "Checking out ${TARGET_BRANCH}."
-  git checkout "${TARGET_BRANCH}"
+    log "Checking out ${TARGET_BRANCH}."
+    git checkout "${TARGET_BRANCH}"
 
-  if [[ "$(git rev-parse --abbrev-ref HEAD)" != "${TARGET_BRANCH}" ]]; then
-    fail "Git checkout guard failed. Current branch is $(git rev-parse --abbrev-ref HEAD)."
+    if [[ "$(git rev-parse --abbrev-ref HEAD)" != "${TARGET_BRANCH}" ]]; then
+      fail "Git checkout guard failed. Current branch is $(git rev-parse --abbrev-ref HEAD)."
+    fi
+
+    log "Pulling latest ${TARGET_BRANCH} changes."
+    git pull --ff-only "${repo_source}" "${TARGET_BRANCH}"
   fi
 
-  log "Pulling latest ${TARGET_BRANCH} changes."
-  git pull --ff-only "${repo_source}" "${TARGET_BRANCH}"
+  [[ -d ".git" ]] || fail "Deployment directory is not a git working tree."
+
+  local current_branch
+  current_branch="$(git rev-parse --abbrev-ref HEAD)"
+  [[ "${current_branch}" == "${TARGET_BRANCH}" ]] ||
+    fail "Deployment branch is ${current_branch}; expected ${TARGET_BRANCH}."
+
+  [[ -z "$(git status --porcelain --untracked-files=no)" ]] ||
+    fail "Deployment working tree has tracked changes."
+
+  if [[ -n "${EXPECTED_GIT_SHA}" ]]; then
+    local current_sha
+    current_sha="$(git rev-parse HEAD)"
+    [[ "${current_sha}" == "${EXPECTED_GIT_SHA}" ]] ||
+      fail "Deployment commit ${current_sha} does not match expected ${EXPECTED_GIT_SHA}."
+  fi
 }
 
 install_dependencies() {
